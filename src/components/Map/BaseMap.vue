@@ -3,104 +3,107 @@
 
   <div v-if="isManualSave && downloadProgress > 0 && downloadProgress < 100" class="download-status">
     <div class="status-header">
-      <span>正在缓存任务规划...</span>
+      <span>正在缓存作战水域...</span>
       <span class="percentage">{{ downloadProgress }}%</span>
     </div>
-    <el-progress
-      :percentage="downloadProgress"
-      :show-text="false"
-      :stroke-width="10"
-      status="success"
-    />
+    <el-progress :percentage="downloadProgress" :show-text="false" :stroke-width="10" status="success" />
     <span class="status-detail">已缓存 {{ savedTiles }} / {{ totalTiles }} 张瓦片</span>
   </div>
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { onMounted, onUnmounted, ref, watch, nextTick } from 'vue';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// --- 插件引入 ---
-import 'leaflet.offline'; // 核心离线库 (基于 IndexedDB)
+// 插件
+import 'leaflet.offline';
 import '@geoman-io/leaflet-geoman-free';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import 'leaflet-rotatedmarker';
 
-// --- 资源与状态管理 ---
-import boatIconImg from '../../assets/navigator-arrows.svg'; // 确保路径正确
+import boatIconImg from '../../assets/navigator-arrows.svg';
 import { useGcsStore } from '../../store/useGcsStore';
 import { storeToRefs } from 'pinia';
 import { useRoute } from 'vue-router';
 
-// --- 变量定义 ---
 const store = useGcsStore();
 const { vehicle, mapTriggers } = storeToRefs(store);
 const route = useRoute();
 
+// --- 变量定义 ---
 let map = null;
 let baseLayer = null;
-let boatMarker = null;
-let autoSaveTimer = null; // 用于自动保存的防抖定时器
-let missionLayerGroup = null; // [新增] 用来统一管理手动重绘的层
 
-// --- 响应式状态 ---
+// [关键修改 1] 定义两个独立的图层组，互不干扰
+let boatLayerGroup = null;     // 专放小船
+let missionLayerGroup = null;  // 专放航线
+
+let boatMarker = null;         // 船的实例
+let autoSaveTimer = null;
+
+// 下载状态
 const downloadProgress = ref(0);
 const totalTiles = ref(0);
 const savedTiles = ref(0);
-const isManualSave = ref(false); // 关键标记：区分是"人点的手动下载"还是"自动缓存"
+const isManualSave = ref(false);
 
 // --- 生命周期 ---
 onMounted(() => {
   initMap();
-  initLayers();
 
-  // 监听路由切换编辑模式
+  // 监听路由变化，决定地图是否可编辑
   watch(() => route.name, (newRouteName) => {
     handleModeChange(newRouteName);
   }, { immediate: true });
 });
 
 onUnmounted(() => {
-  // 组件销毁时清除定时器，防止内存泄漏
   if (autoSaveTimer) clearTimeout(autoSaveTimer);
-  if (map) {
-    map.remove(); // 清理地图实例
-  }
+  if (map) map.remove();
 });
 
-// --- 地图初始化 ---
+// --- 初始化地图 ---
 const initMap = () => {
   map = L.map('map-container', {
     zoomControl: false,
     attributionControl: false,
     minZoom: 3,
+    // [优化] 禁用双击放大，防止画图时误触
+    doubleClickZoom: false
   }).setView([45.77, 126.67], 16);
 
-  initOfflineSystem();
+  initOfflineSystem(); // 加载底图
+  initLayerGroups();   // [关键] 初始化图层组
+  initBoat();          // 初始化小船
+  initGeoman();        // 初始化绘图工具
 };
 
-// --- 核心：离线系统配置 (手动+自动) ---
-const initOfflineSystem = () => {
-  // Google Hybrid (卫星+地名)
-  const googleHybridUrl = 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}';
+// --- [关键修改 2] 初始化图层组 ---
+const initLayerGroups = () => {
+  // 1. 任务图层 (z-index 较低，在线条下面)
+  missionLayerGroup = L.layerGroup().addTo(map);
 
+  // 2. 船只图层 (z-index 最高，确保船永远压在航线上)
+  // Leaflet 的 pane 机制可以控制层级
+  map.createPane('boatPane');
+  map.getPane('boatPane').style.zIndex = 600; // 默认 marker pane 是 600，我们设高一点或者直接利用 zIndexOffset
+
+  boatLayerGroup = L.layerGroup().addTo(map);
+};
+
+// --- 初始化离线系统 (保持不变) ---
+const initOfflineSystem = () => {
+  const googleHybridUrl = 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}';
   baseLayer = L.tileLayer.offline(googleHybridUrl, {
     maxZoom: 20,
     subdomains: ['0', '1', '2', '3'],
-    location: 'indexedDB', // 明确使用 IndexedDB
-    saveWhatYouOnto: true, // 允许保存当前视图
-    crossOrigin: true,     // 必须开启跨域
+    location: 'indexedDB',
+    saveWhatYouOnto: true,
+    crossOrigin: true,
   }).addTo(map);
 
-  setupOfflineEvents();
-  setupAutoCacheStrategy();
-};
-
-// --- 配置离线事件 (进度条逻辑) ---
-const setupOfflineEvents = () => {
   baseLayer.on('savestart', (e) => {
-    // 只有手动保存时才重置UI进度条，自动保存时不重置以免UI闪烁
     if (isManualSave.value) {
       downloadProgress.value = 0;
       totalTiles.value = e._tilesforSave.length;
@@ -109,7 +112,6 @@ const setupOfflineEvents = () => {
   });
 
   baseLayer.on('savetileend', () => {
-    // 只有手动保存时才更新UI
     if (isManualSave.value) {
       savedTiles.value++;
       if (totalTiles.value > 0) {
@@ -119,168 +121,156 @@ const setupOfflineEvents = () => {
   });
 
   baseLayer.on('loadend', () => {
-    // 下载结束的处理
     if (isManualSave.value && downloadProgress.value >= 100) {
-      setTimeout(() => {
-        downloadProgress.value = 0;
-        isManualSave.value = false; // 重置标志位
-      }, 2000);
+      setTimeout(() => { downloadProgress.value = 0; isManualSave.value = false; }, 2000);
     }
   });
 };
 
-// --- 策略：自动静默缓存 ---
-const setupAutoCacheStrategy = () => {
-  map.on('moveend', () => {
-    // 1. 过滤：缩放级别太低(比如看全球视图)时不缓存，只缓存细节图(>=14级)
-    if (map.getZoom() < 14) return;
+// --- 初始化小船 ---
+const initBoat = () => {
+  if (!boatLayerGroup) return;
 
-    // 2. 防抖：用户停止操作 1.5 秒后才开始下载，避免拖拽过程中频繁触发
-    if (autoSaveTimer) clearTimeout(autoSaveTimer);
-
-    autoSaveTimer = setTimeout(() => {
-      // 标记为非手动，这样不会触发大进度条
-      isManualSave.value = false;
-
-      const bounds = map.getBounds();
-      const currentZoom = map.getZoom();
-
-      // console.log(`[AutoCache] 静默缓存当前区域 Zoom: ${currentZoom}`);
-
-      // 仅保存当前层级，节省资源
-      baseLayer.saveTiles(currentZoom,
-        () => {}, // 成功回调(空)
-        () => {}, // 失败回调(空)
-        bounds
-      );
-    }, 1500);
-  });
-};
-
-// --- 外部接口：手动保存当前区域 (由父组件按钮调用) ---
-const saveCurrentArea = () => {
-  if (baseLayer) {
-    isManualSave.value = true; // 开启进度条显示
-    const bounds = map.getBounds();
-
-    // 手动下载策略：下载 15 到 18 级 (根据需求调整)
-    // 注意：一次性下载多层级可能会很慢，建议根据实际需求
-    // 这里示例为下载当前层级，如果需要多层级，可以写个循环或根据业务定
-    const zoom = map.getZoom();
-
-    baseLayer.saveTiles(zoom, () => {}, () => {}, bounds);
-  }
-};
-
-defineExpose({ saveCurrentArea });
-
-// --- 图层与交互 ---
-const initLayers = () => {
   const boatIcon = L.icon({
     iconUrl: boatIconImg,
-    iconSize: [40, 40],
-    iconAnchor: [20, 20],
+    iconSize: [48, 48],
+    iconAnchor: [24, 24],
   });
 
-  boatMarker = L.marker([45.77, 126.67], {
+  // 初始位置
+  const startLat = vehicle.value.position.lat || 45.77;
+  const startLng = vehicle.value.position.lng || 126.67;
+
+  boatMarker = L.marker([startLat, startLng], {
     icon: boatIcon,
-    rotationAngle: 0,
-    rotationOrigin: 'center center'
-  }).addTo(map);
-  // Geoman 配置
-  missionLayerGroup = L.layerGroup().addTo(map);
+    rotationAngle: -45,
+    rotationOrigin: 'center center',
+    zIndexOffset: 2000 // [关键] 极大的 zIndex，确保压住所有航点
+  });
+
+  // 添加到船只专用组，而不是 map
+  boatMarker.addTo(boatLayerGroup);
+};
+
+// --- 初始化绘图工具 ---
+const initGeoman = () => {
   map.pm.setLang('zh');
   map.pm.addControls({
     position: 'topleft',
-    drawCircle: false,
-    drawMarker: false,
-    drawPolygon: false,
-    drawPolyline: true,
-    editMode: true,
-    dragMode: true,
-    removalMode: true
+    drawCircle: false, drawMarker: false, drawPolygon: false,
+    drawPolyline: true, editMode: true, dragMode: true, removalMode: true
   });
   map.pm.toggleControls(false);
 
-
-
-
+  // 监听绘制结束 -> 存入 Store -> 重绘
   map.on('pm:create', (e) => {
-    // 将新画的线同步到 Store
-    // 注意：Geoman 画完会自动在地图上保留 Layer，我们需要把它删掉，
-    // 然后调用 triggerRedraw 让 Store 数据驱动重绘，这样才能保证样式统一（带序号）
-    const latlngs = e.layer.getLatLngs();
-    store.updatePlannedMission(latlngs); // 更新数据
+    const layer = e.layer;
+    const latlngs = layer.getLatLngs();
+    store.updatePlannedMission(latlngs);
 
-    map.removeLayer(e.layer); // 删掉 Geoman 默认画的白线
-    store.triggerRedraw();    // 触发根据数据重绘
+    // [关键] 移除 Geoman 自动生成的线，交由 renderMissionFromStore 统一绘制
+    map.removeLayer(layer);
+    store.triggerRedraw();
   });
 };
+
+// --- [关键修改 3] 渲染任务 (只操作 missionLayerGroup) ---
 const renderMissionFromStore = () => {
   if (!map || !missionLayerGroup) return;
 
-  // 1. 清空当前画板
+  // 1. 只清空任务层，绝对不碰 boatLayerGroup
   missionLayerGroup.clearLayers();
 
   const waypoints = store.mission.plannedWaypoints;
-  if (waypoints.length === 0) return;
+  if (!waypoints || waypoints.length === 0) return;
 
-  // 2. 准备坐标数组
   const latlngs = waypoints.map(p => [p.lat, p.lng]);
 
-  // 3. 画线 (Polyline)
+  // 2. 画线 (双层：白底+蓝芯)
   L.polyline(latlngs, {
-    color: 'white',
-    weight: 7, // 比顶层线宽，形成白边
-    opacity: 0.9,
-    lineJoin: 'round'
+    color: 'white', weight: 6, opacity: 0.9, lineJoin: 'round'
   }).addTo(missionLayerGroup);
 
-  const polyline = L.polyline(latlngs, {
-    color: '#409EFF', // Element Plus 主题蓝，或者用亮黄色 '#FFD700' 对比度更高
-    weight: 4,        // 实线宽度
-    opacity: 1.0,     // 完全不透明
-    lineJoin: 'round', // 转角圆润
-    // dashArray: '10, 10' // <--- 彻底删除这行代码，去掉虚线
+  L.polyline(latlngs, {
+    color: '#409EFF', weight: 3, opacity: 1.0, lineJoin: 'round'
   }).addTo(missionLayerGroup);
 
- waypoints.forEach((pt, index) => {
+  // 3. 画点 (带序号)
+  waypoints.forEach((pt, index) => {
     const numberIcon = L.divIcon({
-      className: 'map-seq-icon', // CSS 类名不变，去修改样式
+      className: 'map-seq-icon',
       html: `<span>${index + 1}</span>`,
-      // 增大尺寸，让数字更易读
       iconSize: [32, 32],
-      iconAnchor: [16, 16] // 保持居中 (size的一半)
+      iconAnchor: [16, 16]
     });
 
     const marker = L.marker([pt.lat, pt.lng], {
       icon: numberIcon,
       draggable: true,
-      // 提高 zIndex，确保标记永远压在线条上面
-      zIndexOffset: 1000
+      zIndexOffset: 1000 // 比线高，但比船低
     }).addTo(missionLayerGroup);
 
-    // 5. 绑定标记拖拽事件 -> 更新 Store
+    // 拖拽回写 Store
     marker.on('dragend', (e) => {
       const newPos = e.target.getLatLng();
-      // 直接修改 Store 里的对应点坐标
+      // 这里直接修改 Store 数据是浅拷贝修改，为了触发 reactivity 最好用 action
+      // 但 store.mission 是 reactive，直接改属性是有效的
       store.mission.plannedWaypoints[index].lat = newPos.lat;
       store.mission.plannedWaypoints[index].lng = newPos.lng;
-      // 拖拽点后，线也得跟着变，简单起见，再次触发重绘
       store.triggerRedraw();
     });
   });
-
-  // 6. 让新画的线也支持 Geoman 编辑 (可选，如果只靠 Marker 拖拽其实也够了)
-  // 如果想支持“拖动线段中间增加点”，需要开启 pm.enable()
-  // polyline.pm.enable();
 };
-const updateMissionStore = (layer) => {
-  if (layer && layer.getLatLngs) {
-    store.updatePlannedMission(layer.getLatLngs());
+
+// --- 暴露给外部的方法 ---
+const saveCurrentArea = () => {
+  if (baseLayer) {
+    isManualSave.value = true;
+    baseLayer.saveTiles(map.getZoom(), () => {}, () => {}, map.getBounds());
   }
 };
 
+const focusBoat = () => {
+  if (!map || !vehicle.value.position) return;
+  const { lat, lng } = vehicle.value.position;
+  if (lat && lng) {
+    map.flyTo([lat, lng], 18, { animate: true, duration: 1.0 });
+  }
+};
+
+defineExpose({ saveCurrentArea, focusBoat });
+
+// --- 监听器 ---
+
+// 1. 监听位置变化 -> 更新小船 (只操作 boatMarker)
+watch(() => vehicle.value.position, (newPos) => {
+  console.log(newPos)
+  if (boatMarker && newPos.lat && newPos.lng) {
+    boatMarker.setLatLng([newPos.lat, newPos.lng]);
+  }
+}, { deep: true });
+
+// 2. 监听航向变化 -> 旋转小船
+watch(() => vehicle.value.attitude.yaw, (newYaw) => {
+  if (boatMarker) {
+    // 假设 SVG 箭头朝上(0度)，无需偏移
+    boatMarker.setRotationAngle(newYaw-45 || -45);
+  }
+});
+
+// 3. 监听重绘触发器 -> 重绘任务 (只操作 missionLayerGroup)
+watch(() => mapTriggers.value.redrawMission, (val) => {
+  if (val) renderMissionFromStore();
+});
+
+// 4. 监听清空触发器
+watch(() => mapTriggers.value.clearMap, (val) => {
+  if (val && missionLayerGroup) {
+    missionLayerGroup.clearLayers();
+  }
+});
+
+// 5. 路由模式切换
 const handleModeChange = (pageName) => {
   if (!map) return;
   if (pageName === 'planner') {
@@ -288,53 +278,8 @@ const handleModeChange = (pageName) => {
   } else {
     map.pm.toggleControls(false);
     map.pm.disableDraw();
-    map.pm.disableGlobalEditMode();
   }
 };
-
-// --- 数据监听 ---
-watch(() => vehicle.value.position, (newPos) => {
-  if (boatMarker && newPos.lat !== 0) {
-    boatMarker.setLatLng([newPos.lat, newPos.lon]);
-  }
-}, { deep: true });
-
-watch(() => vehicle.value.attitude.yaw, (newYaw) => {
-  if (boatMarker) {
-    boatMarker.setRotationAngle(newYaw);
-  }
-});
-watch(() => store.mapTriggers.redrawMission, (val) => {
-  if (val) {
-    renderMissionFromStore();
-  }
-});
-
-watch(() => store.mapTriggers.clearMap, (val) => {
-  if (val) {
-    missionLayerGroup.clearLayers();
-  }
-});
-// 1. 监听清空指令
-watch(() => mapTriggers.value.clearMap, (val) => {
-  if (val && map) {
-    // 清除 Geoman 绘制的所有图层
-    map.eachLayer((layer) => {
-      // 这里的逻辑是：如果图层是 Geoman 画出来的，或者是 missionPolyline，就删掉
-      if (layer._pmTempLayer || (layer.pm && !layer._pmTempLayer && layer !== baseLayer && layer !== boatMarker)) {
-         map.removeLayer(layer);
-      }
-    });
-    // 如果你有专门的 missionPolyline 变量，也可以在这里 remove
-  }
-});
-
-// 2. 监听保存指令
-watch(() => mapTriggers.value.saveCurrentMap, (val) => {
-  if (val) {
-    saveCurrentArea(); // 调用之前的保存函数
-  }
-});
 </script>
 
 <style scoped>
@@ -362,7 +307,6 @@ watch(() => mapTriggers.value.saveCurrentMap, (val) => {
   color: white;
   animation: slideUp 0.3s ease-out;
 }
-
 .status-header {
   display: flex;
   justify-content: space-between;

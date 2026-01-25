@@ -186,7 +186,7 @@ const handleUpload = () => {
 };
 
 const handleDownload = () => {
-  store.sendPacket("CMD_DOWNLOAD_MISSION", {});
+    store.sendPacket("CMD_DOWNLOAD_MISSION", {});
 };
 const handleSaveMap = () => store.triggerMapSave();
 
