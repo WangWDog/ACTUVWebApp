@@ -10,15 +10,15 @@
           <component :is="Component"/>
         </keep-alive>
       </router-view>
-      <div class="global-map-controls">
-        <el-tooltip content="定位到船只" placement="left">
-          <button class="control-btn" @click="handleFocusBoat">
-            <el-icon>
-              <Aim/>
-            </el-icon>
-          </button>
-        </el-tooltip>
-      </div>
+<!--      <div class="global-map-controls">-->
+<!--        <el-tooltip content="定位到船只" placement="left">-->
+<!--          <button class="control-btn" @click="handleFocusBoat">-->
+<!--            <el-icon>-->
+<!--              <Aim/>-->
+<!--            </el-icon>-->
+<!--          </button>-->
+<!--        </el-tooltip>-->
+<!--      </div>-->
       <div class="bottom-dock">
         <el-radio-group v-model="currentTab" @change="handleTabChange" class="glass-nav">
           <el-radio-button value="dashboard">
@@ -40,7 +40,7 @@
 </template>
 
 <script setup>
-import {onMounted, ref} from 'vue'
+import {onMounted, ref, watch} from 'vue'
 import {useRouter} from 'vue-router'
 import {useGcsStore} from './store/useGcsStore'
 import BaseMap from './components/Map/BaseMap.vue'
@@ -60,7 +60,13 @@ const handleFocusBoat = () => {
     mapRef.value.focusBoat()
   }
 }
-
+// --- 添加这段监听代码 ---
+watch(() => store.mapTriggers.centerMap, (newVal) => {
+  if (newVal) {
+    handleFocusBoat(); // 执行父组件的定位逻辑
+    store.mapTriggers.centerMap = false; // 立即复位，保证下次点击还能触发
+  }
+});
 onMounted(() => {
   store.connectWebSocket()
 })

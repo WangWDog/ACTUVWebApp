@@ -244,7 +244,6 @@ defineExpose({ saveCurrentArea, focusBoat });
 
 // 1. 监听位置变化 -> 更新小船 (只操作 boatMarker)
 watch(() => vehicle.value.position, (newPos) => {
-  console.log(newPos)
   if (boatMarker && newPos.lat && newPos.lng) {
     boatMarker.setLatLng([newPos.lat, newPos.lng]);
   }

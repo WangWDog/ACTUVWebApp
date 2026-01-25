@@ -19,7 +19,8 @@ export const useGcsStore = defineStore('gcs', () => {
     const mapTriggers = reactive({
         saveCurrentMap: false,
         clearMap: false,
-        redrawMission: false
+        redrawMission: false,
+        centerMap: false, // <--- 添加这一行
     })
     // --- 2. 任务数据 ---
     const mission = reactive({
@@ -57,14 +58,38 @@ export const useGcsStore = defineStore('gcs', () => {
             // 连接后立刻请求一次飞控连接 (可选，取决于后端逻辑)
             sendPacket("CMD_CONNECT_VEHICLE", {});
         };
+        socket.binaryType = "arraybuffer";
+
+        // 创建解码器，复用实例以提高性能
+        const decoder = new TextDecoder('utf-8');
 
         socket.onmessage = (event) => {
             try {
-                const msg = JSON.parse(event.data);
+                let jsonString = '';
+
+                // 1. 判断数据类型
+                if (event.data instanceof ArrayBuffer) {
+                    // 情况 A: 收到的是后端 orjson 发来的二进制流 -> 解码
+                    jsonString = decoder.decode(event.data);
+                } else {
+                    // 情况 B: 收到的是普通字符串 (兼容旧逻辑)
+                    jsonString = event.data;
+                }
+
+                // 2. 解析 JSON
+                const msg = JSON.parse(jsonString);
+
+                // 3. 处理业务
                 handleIncomingMessage(msg);
+
             } catch (e) {
-                console.log(event.data)
                 console.error("解析消息失败:", e);
+                // 打印原始数据以便调试，注意 ArrayBuffer 直接打印看不出内容
+                if (event.data instanceof ArrayBuffer) {
+                    console.log("Raw binary data length:", event.data.byteLength);
+                } else {
+                    console.log("Raw text data:", event.data);
+                }
             }
         };
 
@@ -98,9 +123,9 @@ export const useGcsStore = defineStore('gcs', () => {
                 }
                 if (payload.attitude) {
                     vehicle.attitude = {
-                        roll: payload.attitude.roll_deg ?? payload.attitude.roll ?? 0,
-                        pitch: payload.attitude.pitch_deg ?? payload.attitude.pitch ?? 0,
-                        yaw: payload.attitude.yaw_deg ?? payload.attitude.yaw ?? 0
+                        roll: payload.attitude.roll_deg ?? 0,
+                        pitch: payload.attitude.pitch_deg ?? 0,
+                        yaw: payload.attitude.yaw_deg ?? 0
                     };
                 }
                 if (payload.velocity) {
@@ -117,7 +142,7 @@ export const useGcsStore = defineStore('gcs', () => {
                 if (payload.gps) vehicle.gps = {sats: payload.gps.sat_count, fix: payload.gps.fix_type};
                 break;
             case 'DATA_LOG':
-                addLog(payload.text, payload.level, timestamp);
+                addLog(payload.text, payload.level);
                 break;
             // 3. 指令回执 (ACK)
             case 'ACK':
