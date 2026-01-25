@@ -802,6 +802,7 @@ small {
   color: #444;
   font-size: 20px;
   margin: 0 4px;
+  background: none;
 }
 
 .mission-progress-bar {
