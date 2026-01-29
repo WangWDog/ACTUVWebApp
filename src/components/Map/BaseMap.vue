@@ -12,7 +12,7 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, watch, nextTick } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -35,11 +35,13 @@ const route = useRoute();
 let map = null;
 let baseLayer = null;
 
-// [关键修改 1] 定义两个独立的图层组，互不干扰
-let boatLayerGroup = null;     // 专放小船
-let missionLayerGroup = null;  // 专放航线
+let boatLayerGroup = null;
+let missionLayerGroup = null;
+let trajectoryLayerGroup = null;
 
-let boatMarker = null;         // 船的实例
+let boatMarker = null;
+let trajectoryPolyline = null;
+let trajectoryShadow = null; // <--- 轨迹阴影
 let autoSaveTimer = null;
 
 // 下载状态
@@ -51,8 +53,6 @@ const isManualSave = ref(false);
 // --- 生命周期 ---
 onMounted(() => {
   initMap();
-
-  // 监听路由变化，决定地图是否可编辑
   watch(() => route.name, (newRouteName) => {
     handleModeChange(newRouteName);
   }, { immediate: true });
@@ -69,30 +69,33 @@ const initMap = () => {
     zoomControl: false,
     attributionControl: false,
     minZoom: 3,
-    // [优化] 禁用双击放大，防止画图时误触
     doubleClickZoom: false
   }).setView([45.77, 126.67], 16);
 
-  initOfflineSystem(); // 加载底图
-  initLayerGroups();   // [关键] 初始化图层组
-  initBoat();          // 初始化小船
-  initGeoman();        // 初始化绘图工具
+  initOfflineSystem();
+  initLayerGroups();
+  initBoat();
+  initTrajectory();
+  initGeoman();
 };
 
-// --- [关键修改 2] 初始化图层组 ---
 const initLayerGroups = () => {
-  // 1. 任务图层 (z-index 较低，在线条下面)
-  missionLayerGroup = L.layerGroup().addTo(map);
+  // 定义不同的 pane 来控制层级
+  map.createPane('missionPane');
+  map.getPane('missionPane').style.zIndex = 450;
 
-  // 2. 船只图层 (z-index 最高，确保船永远压在航线上)
-  // Leaflet 的 pane 机制可以控制层级
+  map.createPane('trajectoryPane');
+  map.getPane('trajectoryPane').style.zIndex = 500; // <--- 比 mission 高
+
   map.createPane('boatPane');
-  map.getPane('boatPane').style.zIndex = 600; // 默认 marker pane 是 600，我们设高一点或者直接利用 zIndexOffset
+  map.getPane('boatPane').style.zIndex = 650;
 
-  boatLayerGroup = L.layerGroup().addTo(map);
+  // 初始化图层组并分配到对应的 pane
+  missionLayerGroup = L.layerGroup({ pane: 'missionPane' }).addTo(map);
+  trajectoryLayerGroup = L.layerGroup({ pane: 'trajectoryPane' }).addTo(map);
+  boatLayerGroup = L.layerGroup({ pane: 'boatPane' }).addTo(map);
 };
 
-// --- 初始化离线系统 (保持不变) ---
 const initOfflineSystem = () => {
   const googleHybridUrl = 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}';
   baseLayer = L.tileLayer.offline(googleHybridUrl, {
@@ -127,32 +130,45 @@ const initOfflineSystem = () => {
   });
 };
 
-// --- 初始化小船 ---
 const initBoat = () => {
   if (!boatLayerGroup) return;
-
   const boatIcon = L.icon({
     iconUrl: boatIconImg,
     iconSize: [48, 48],
     iconAnchor: [24, 24],
   });
-
-  // 初始位置
   const startLat = vehicle.value.position.lat || 45.77;
   const startLng = vehicle.value.position.lng || 126.67;
-
   boatMarker = L.marker([startLat, startLng], {
     icon: boatIcon,
     rotationAngle: -45,
     rotationOrigin: 'center center',
-    zIndexOffset: 2000 // [关键] 极大的 zIndex，确保压住所有航点
-  });
-
-  // 添加到船只专用组，而不是 map
-  boatMarker.addTo(boatLayerGroup);
+    zIndexOffset: 2000
+  }).addTo(boatLayerGroup);
 };
 
-// --- 初始化绘图工具 ---
+// --- 修改: 初始化轨迹样式 ---
+const initTrajectory = () => {
+  if (!trajectoryLayerGroup) return;
+
+  // 1. 阴影层
+  trajectoryShadow = L.polyline([], {
+    color: 'black',
+    weight: 7, // 比主线宽
+    opacity: 0.4,
+    lineJoin: 'round',
+  }).addTo(trajectoryLayerGroup);
+
+  // 2. 主线层
+  trajectoryPolyline = L.polyline([], {
+    color: '#FF4500',
+    weight: 5, // 粗实线
+    opacity: 1,
+    lineJoin: 'round',
+  }).addTo(trajectoryLayerGroup);
+};
+
+
 const initGeoman = () => {
   map.pm.setLang('zh');
   map.pm.addControls({
@@ -162,40 +178,29 @@ const initGeoman = () => {
   });
   map.pm.toggleControls(false);
 
-  // 监听绘制结束 -> 存入 Store -> 重绘
   map.on('pm:create', (e) => {
     const layer = e.layer;
     const latlngs = layer.getLatLngs();
     store.updatePlannedMission(latlngs);
-
-    // [关键] 移除 Geoman 自动生成的线，交由 renderMissionFromStore 统一绘制
     map.removeLayer(layer);
     store.triggerRedraw();
   });
 };
 
-// --- [关键修改 3] 渲染任务 (只操作 missionLayerGroup) ---
 const renderMissionFromStore = () => {
   if (!map || !missionLayerGroup) return;
-
-  // 1. 只清空任务层，绝对不碰 boatLayerGroup
   missionLayerGroup.clearLayers();
-
   const waypoints = store.mission.plannedWaypoints;
   if (!waypoints || waypoints.length === 0) return;
-
   const latlngs = waypoints.map(p => [p.lat, p.lng]);
 
-  // 2. 画线 (双层：白底+蓝芯)
   L.polyline(latlngs, {
     color: 'white', weight: 6, opacity: 0.9, lineJoin: 'round'
   }).addTo(missionLayerGroup);
-
   L.polyline(latlngs, {
-    color: '#409EFF', weight: 3, opacity: 1.0, lineJoin: 'round'
+    color: '#409EFF', weight: 3, opacity: 1, lineJoin: 'round'
   }).addTo(missionLayerGroup);
 
-  // 3. 画点 (带序号)
   waypoints.forEach((pt, index) => {
     const numberIcon = L.divIcon({
       className: 'map-seq-icon',
@@ -203,18 +208,13 @@ const renderMissionFromStore = () => {
       iconSize: [32, 32],
       iconAnchor: [16, 16]
     });
-
     const marker = L.marker([pt.lat, pt.lng], {
       icon: numberIcon,
       draggable: true,
-      zIndexOffset: 1000 // 比线高，但比船低
+      zIndexOffset: 1000
     }).addTo(missionLayerGroup);
-
-    // 拖拽回写 Store
     marker.on('dragend', (e) => {
       const newPos = e.target.getLatLng();
-      // 这里直接修改 Store 数据是浅拷贝修改，为了触发 reactivity 最好用 action
-      // 但 store.mission 是 reactive，直接改属性是有效的
       store.mission.plannedWaypoints[index].lat = newPos.lat;
       store.mission.plannedWaypoints[index].lng = newPos.lng;
       store.triggerRedraw();
@@ -222,7 +222,6 @@ const renderMissionFromStore = () => {
   });
 };
 
-// --- 暴露给外部的方法 ---
 const saveCurrentArea = () => {
   if (baseLayer) {
     isManualSave.value = true;
@@ -242,34 +241,43 @@ defineExpose({ saveCurrentArea, focusBoat });
 
 // --- 监听器 ---
 
-// 1. 监听位置变化 -> 更新小船 (只操作 boatMarker)
 watch(() => vehicle.value.position, (newPos) => {
   if (boatMarker && newPos.lat && newPos.lng) {
     boatMarker.setLatLng([newPos.lat, newPos.lng]);
   }
 }, { deep: true });
 
-// 2. 监听航向变化 -> 旋转小船
 watch(() => vehicle.value.attitude.yaw, (newYaw) => {
   if (boatMarker) {
-    // 假设 SVG 箭头朝上(0度)，无需偏移
     boatMarker.setRotationAngle(newYaw-45 || -45);
   }
 });
 
-// 3. 监听重绘触发器 -> 重绘任务 (只操作 missionLayerGroup)
+// --- 修改: 监听轨迹数据变化 ---
+watch(() => vehicle.value.trajectory, (newTrajectory, oldTrajectory) => {
+  if (trajectoryPolyline && trajectoryShadow) {
+    // 如果是清空操作，则直接设置为空数组
+    if (newTrajectory.length === 0 && oldTrajectory.length > 0) {
+      trajectoryPolyline.setLatLngs([]);
+      trajectoryShadow.setLatLngs([]);
+    } else { // 否则是增量更新
+      trajectoryPolyline.setLatLngs(newTrajectory);
+      trajectoryShadow.setLatLngs(newTrajectory);
+    }
+  }
+}, { deep: true });
+
+
 watch(() => mapTriggers.value.redrawMission, (val) => {
   if (val) renderMissionFromStore();
 });
 
-// 4. 监听清空触发器
 watch(() => mapTriggers.value.clearMap, (val) => {
   if (val && missionLayerGroup) {
     missionLayerGroup.clearLayers();
   }
 });
 
-// 5. 路由模式切换
 const handleModeChange = (pageName) => {
   if (!map) return;
   if (pageName === 'planner') {
@@ -285,11 +293,10 @@ const handleModeChange = (pageName) => {
 #map-container {
   width: 100%;
   height: 100%;
-  background: #222; /* 卫星图未加载时的底色 */
+  background: #222;
   z-index: 1;
 }
 
-/* 进度条样式美化 */
 .download-status {
   position: absolute;
   bottom: 100px;
@@ -316,7 +323,7 @@ const handleModeChange = (pageName) => {
 }
 
 .percentage {
-  color: #67c23a; /* Element Plus Success Color */
+  color: #67c23a;
 }
 
 .status-detail {
@@ -333,33 +340,23 @@ const handleModeChange = (pageName) => {
 }
 </style>
 <style>
-/* --- 全局样式：高对比度地图标记 --- */
 .map-seq-icon {
-  /* 主体背景色 */
   background-color: #409EFF;
-  /* 强烈的白色边框，形成“光环”隔绝背景干扰 */
   border: 3px solid white;
-  /* 确保是正圆 */
   border-radius: 50%;
-  /* 文字颜色 */
   color: white;
-  /* 文字居中与对齐 */
   text-align: center;
   display: flex;
   justify-content: center;
   align-items: center;
-  /* 字体加粗加大 */
   font-weight: 800;
   font-size: 16px;
   font-family: Arial, sans-serif;
-  /* 强烈的立体投影，让点“浮”在地图上 */
   box-shadow: 0 3px 8px rgba(0,0,0,0.6);
-  /* 确保 padding 不会撑大设定好的 iconSize */
   box-sizing: border-box;
   transition: transform 0.2s;
 }
 
-/* 可选：鼠标悬停时放大一下增加交互感 */
 .map-seq-icon:hover {
   transform: scale(1.1);
   background-color: #66b1ff;

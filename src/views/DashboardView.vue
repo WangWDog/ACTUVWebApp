@@ -40,11 +40,11 @@
         <div class="popover-content">
           <h4>飞行模式选择</h4>
           <div class="mode-grid">
-            <button class="mode-btn" @click="changeMode('OFFBOARD')">OFFBOARD (控制)</button>
-            <button class="mode-btn" @click="enableFollowMode">FOLLOW (指点)</button>
-            <button class="mode-btn" @click="changeMode('MISSION')">MISSION (任务)</button>
-            <button class="mode-btn" @click="changeMode('HOLD')">HOLD (悬停)</button>
-            <button class="mode-btn danger" @click="changeMode('RTL')">RTL (返航)</button>
+            <button class="mode-btn" @click="changeMode('OFFBOARD')">地面控制</button>
+            <button class="mode-btn" @click="enableFollowMode">指点模式</button>
+            <button class="mode-btn" @click="changeMode('MISSION')">自动任务</button>
+            <button class="mode-btn" @click="changeMode('HOLD')">暂停模式</button>
+            <button class="mode-btn danger" @click="changeMode('RTL')">一键返航</button>
           </div>
         </div>
       </el-popover>
@@ -104,8 +104,8 @@
         <div class="popover-content">
           <h4>电机安全锁</h4>
           <div class="mode-grid">
-            <button class="mode-btn success" @click="sendArmCommand('ARM', false)">解锁 (Arm)</button>
-            <button class="mode-btn warning" @click="sendArmCommand('DISARM', false)">上锁 (Disarm)</button>
+            <button class="mode-btn success" @click="sendArmCommand('ARM', false)">解锁</button>
+            <button class="mode-btn warning" @click="sendArmCommand('DISARM', false)">上锁</button>
             <button class="mode-btn danger" @click="sendArmCommand('ARM', true)">强制解锁</button>
             <button class="mode-btn danger" @click="sendArmCommand('DISARM', true)">强制上锁</button>
           </div>
@@ -119,7 +119,30 @@
         <span class="hud-label-mini">定位</span>
       </div>
 
+      <!-- 新增清除轨迹按钮 -->
+      <div class="hud-item icon-btn" @click="store.clearTrajectory" title="清除轨迹">
+        <el-icon>
+          <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+            <path fill="currentColor"
+                  d="M896 160H704a32 32 0 0 0-32 32v96h-448V192a32 32 0 0 0-32-32H128a32 32 0 0 0-32 32v160h768V192a32 32 0 0 0-32-32zM128 416v480a32 32 0 0 0 32 32h608a32 32 0 0 0 32-32V416H128zm352 320a32 32 0 0 1-32 32h-96a32 32 0 0 1-32-32V544a32 32 0 0 1 32-32h96a32 32 0 0 1 32 32v192zm192 0a32 32 0 0 1-32 32h-96a32 32 0 0 1-32-32V544a32 32 0 0 1 32-32h96a32 32 0 0 1 32 32v192z"></path>
+          </svg>
+        </el-icon>
+        <span class="hud-label-mini">清迹</span>
+      </div>
+
     </div>
+
+    <!-- 新增工具栏 -->
+    <div class="accessory-bar">
+      <div
+          class="hud-item relay-item"
+          :class="{ 'active': vehicle.relay_on }"
+          @click="store.setRelay(!vehicle.relay_on)"
+      >
+        <span class="hud-label-mini">特种混合器: {{ vehicle.relay_on ? '开' : '关' }}</span>
+      </div>
+    </div>
+
 
     <transition name="slide-up">
       <div class="bottom-dashboard" v-if="vehicle.connected && ['OFFBOARD', 'MISSION'].includes(vehicle.mode)">
@@ -127,7 +150,7 @@
         <template v-if="vehicle.mode === 'OFFBOARD'">
           <div class="joystick-box left">
             <div class="joystick-field">
-              <VirtualJoystick @update="handleLeftStick" @end="resetLeftStick"/>
+              <VirtualJoystick @update="handleLeftStick" @end="resetLeftStick" lockY/>
             </div>
             <span class="stick-label">THROTTLE</span>
           </div>
@@ -151,7 +174,7 @@
 
           <div class="joystick-box right">
             <div class="joystick-field">
-              <VirtualJoystick @update="handleRightStick" @end="resetRightStick"/>
+              <VirtualJoystick @update="handleRightStick" @end="resetRightStick" lockX/>
             </div>
             <span class="stick-label">STEERING</span>
           </div>
@@ -252,12 +275,11 @@
 </template>
 
 <script setup>
-import {computed, onUnmounted, ref, watch} from 'vue';
+import {computed, onMounted, onUnmounted, ref, watch} from 'vue';
 import {useGcsStore} from '../store/useGcsStore';
 import {storeToRefs} from 'pinia';
 import VirtualJoystick from '../components/Cockpit/VirtualJoystick.vue';
-import {throttle} from 'lodash';
-import {Aim, Bell, Link, Loading, VideoPause, VideoPlay} from '@element-plus/icons-vue';
+import {Aim, Bell, Link, Loading, SwitchButton, VideoPause, VideoPlay} from '@element-plus/icons-vue';
 import {ElMessage, ElMessageBox} from 'element-plus';
 
 const store = useGcsStore();
@@ -309,7 +331,10 @@ const getLogLevelClass = (level) => {
 // --- 动作逻辑 ---
 const changeMode = (mode) => {
   store.sendPacket('CMD_SET_MODE', {mode: mode});
-  if (mode === 'MISSION') missionState.value = 'EXECUTING';
+  if (mode === 'MISSION') {
+    missionState.value = 'EXECUTING';
+    store.setRelay(1)
+  }
 };
 
 const handleSubModeChange = (val) => {
@@ -384,33 +409,83 @@ const setHomePoint = () => {
   ElMessage.success('已请求设为返航点');
 };
 
-// --- 摇杆逻辑 (复用) ---
-const controlState = ref({x: 0.0, y: 0.0, z: 0.5, r: 0.0});
-const sendControlCommand = throttle(() => {
-  store.sendPacket("CMD_MANUAL_CONTROL", {
-    x: controlState.value.x, y: controlState.value.y, z: 0.5, r: controlState.value.r
-  });
-}, 100);
+// --- 摇杆逻辑 (修改版) ---
+const controlState = ref({throttle: 0.0, steering: 0.0}); // 改名：x -> throttle, r -> steering
+const targetYaw = ref(0.0); // 维护目标航向
+let controlLoop = null;
+
+// 增益配置
+const GAINS = {
+  STEADY_YAW_RATE: 30.0, // deg/s (积分速度)
+  STEADY_THRUST: 1.0,    // 0-1
+  ACRO_VX: 1.0,          // m/s
+  ACRO_YAW_RATE: 6.0    // deg/s
+};
+
+// 启动控制循环
+onMounted(() => {
+  controlLoop = setInterval(() => {
+    // 仅在 OFFBOARD 模式下发送指令
+    if (vehicle.value.mode === 'OFFBOARD') {
+      const dt = 0.1; // 100ms
+      const lx = controlState.value.throttle; // 左摇杆 Y (推力/速度)
+      const rx = controlState.value.steering; // 右摇杆 X (转向)
+
+      let packet = {};
+
+      if (offboardSubMode.value === 'STEADY') {
+        // STEADY: 航向锁定 + 推力控制
+        // 积分计算目标航向
+        targetYaw.value += rx * GAINS.STEADY_YAW_RATE * dt;
+
+        // 规范化到 0-360 或 -180-180 (可选，视后端需求，这里保持累积值通常也没问题，但最好规范化)
+        // 这里简化处理，直接发送累积值，后端通常能处理
+
+        packet = {
+          x: 0.0, // STEADY 下不用 x
+          y: 0.0,
+          z: lx * GAINS.STEADY_THRUST, // 映射到 thrust
+          r: targetYaw.value // 发送目标角度
+        };
+      } else {
+        // ACRO: 速度 + 角速度控制
+        // 在 ACRO 模式下，同步 targetYaw 为当前实际 Yaw，以便切回 STEADY 时平滑
+        targetYaw.value = vehicle.value.attitude.yaw;
+
+        packet = {
+          x: lx * GAINS.ACRO_VX, // 映射到 vx
+          y: 0.0,
+          z: 0.0,
+          r: rx * GAINS.ACRO_YAW_RATE // 映射到 yaw_rate
+        };
+      }
+      console.log(targetYaw.value)
+      store.sendPacket("CMD_MANUAL_CONTROL", packet);
+    } else {
+      // 非 OFFBOARD 模式下，持续同步 targetYaw 为当前实际 Yaw
+      // 这样一旦切入 OFFBOARD (STEADY)，就会从当前角度开始锁定
+      if (vehicle.value.attitude) {
+        targetYaw.value = vehicle.value.attitude.yaw;
+      }
+    }
+  }, 100);
+});
 
 const handleLeftStick = (vec) => {
-  controlState.value.x = vec.y;
-  sendControlCommand();
+  controlState.value.throttle = vec.y; // 记录原始值 -1 ~ 1
 };
 const resetLeftStick = () => {
-  controlState.value.x = 0.0;
-  sendControlCommand();
+  controlState.value.throttle = 0.0;
 };
 const handleRightStick = (vec) => {
-  controlState.value.r = vec.x;
-  sendControlCommand();
+  controlState.value.steering = vec.x; // 记录原始值 -1 ~ 1
 };
 const resetRightStick = () => {
-  controlState.value.r = 0.0;
-  sendControlCommand();
+  controlState.value.steering = 0.0;
 };
 
 onUnmounted(() => {
-  sendControlCommand.cancel();
+  if (controlLoop) clearInterval(controlLoop);
   if (reconnectTimer) clearInterval(reconnectTimer);
 });
 </script>
@@ -447,6 +522,40 @@ onUnmounted(() => {
   z-index: 1000;
 }
 
+/* ================== 新增工具栏 ================== */
+.accessory-bar {
+  pointer-events: auto;
+  position: absolute;
+  top: 68px; /* 位于主HUD下方 */
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  background: rgba(20, 20, 20, 0.7);
+  backdrop-filter: blur(10px);
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.relay-item {
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(255, 51, 51, 0.94);
+  color: #ccc;
+  transition: all 0.3s;
+}
+
+.relay-item.active {
+  background: #67c23a;
+  color: white;
+  box-shadow: 0 0 10px rgba(103, 194, 58, 0.5);
+}
+
+
 .divider {
   width: 1px;
   height: 24px;
@@ -471,7 +580,7 @@ onUnmounted(() => {
 .icon-btn {
   flex-direction: row;
   gap: 5px;
-  min-width: 40px;
+  min-width: 55px;
 }
 
 .icon-btn .el-icon {
@@ -486,7 +595,7 @@ onUnmounted(() => {
 }
 
 .hud-label-mini {
-  font-size: 10px;
+  font-size: 15px;
   font-weight: bold;
 }
 
@@ -588,19 +697,20 @@ small {
   font-weight: bold;
   letter-spacing: 1px;
 }
+
 /* 修改 joystick-box：作为整体容器 */
 .joystick-box {
-      display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    width: 140px;
-    height: 170px;
-    /* background: rgba(0, 0, 0, 0.3); */
-    padding: 10px;
-    border-radius: 20px;
-    /* backdrop-filter: blur(5px); */
-    box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 140px;
+  height: 170px;
+  /* background: rgba(0, 0, 0, 0.3); */
+  padding: 10px;
+  border-radius: 20px;
+  /* backdrop-filter: blur(5px); */
+  box-sizing: border-box;
 }
 
 /* 新增：摇杆的专属区域 */
@@ -622,6 +732,7 @@ small {
   /* 确保文字不会拦截点击，但在 flex 布局下通常不需要 */
   pointer-events: none;
 }
+
 /* 中间控制面板 */
 .center-panel {
   flex: 1;

@@ -1,10 +1,21 @@
 <template>
-  <div class="joystick-zone" ref="zoneRef"></div>
+  <div class="joystick-zone" ref="zoneRef" @dragstart.prevent></div>
 </template>
 
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue';
 import nipplejs from 'nipplejs';
+
+const props = defineProps({
+  lockX: {
+    type: Boolean,
+    default: false
+  },
+  lockY: {
+    type: Boolean,
+    default: false
+  }
+});
 
 const emit = defineEmits(['update', 'end']);
 const zoneRef = ref(null);
@@ -19,7 +30,9 @@ onMounted(() => {
     // 这里颜色设为透明，完全由下方 CSS 接管，这样更灵活
     color: 'rgba(255, 255, 255, 0)',
     threshold: 0.1,
-    restOpacity: 1.0 // 保持常亮，不透明
+    restOpacity: 1.0, // 保持常亮，不透明
+    lockX: props.lockX,
+    lockY: props.lockY
   });
 
   manager.on('move', (evt, data) => {
@@ -32,6 +45,12 @@ onMounted(() => {
   });
 
   manager.on('end', () => emit('end'));
+
+  // 修复：等待父组件动画结束后触发 resize，确保 nipplejs 重新计算坐标
+  // 解决 "class=font" (front) 跳动问题
+  setTimeout(() => {
+    window.dispatchEvent(new Event('resize'));
+  }, 600);
 });
 
 onUnmounted(() => {
@@ -45,6 +64,8 @@ onUnmounted(() => {
   height: 100%;
   position: relative;
   pointer-events: auto;
+  touch-action: none; /* 关键：防止触摸滚动干扰 */
+  user-select: none;  /* 防止选中 */
 }
 
 /* --- 核心修改：自定义 NippleJS 内部样式 --- */
