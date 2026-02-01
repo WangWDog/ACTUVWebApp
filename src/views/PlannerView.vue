@@ -82,6 +82,39 @@
             </div>
           </el-tab-pane>
 
+          <el-tab-pane label="区域规划" name="area">
+            <div class="tab-content">
+              <div class="area-controls">
+                <div class="input-group">
+                  <span>作业方向</span>
+                  <el-switch
+                    v-model="areaParams.isVertical"
+                    active-text="垂直"
+                    inactive-text="水平"
+                  />
+                </div>
+                <div class="input-group" v-if="areaParams.isVertical">
+                  <span>行间距 (m)</span>
+                  <input type="number" class="hud-input" v-model.number="areaParams.horizontalSpacing">
+                </div>
+                <div class="input-group" v-else>
+                  <span>行间距 (m)</span>
+                  <input type="number" class="hud-input" v-model.number="areaParams.verticalSpacing">
+                </div>
+              </div>
+
+              <div class="tools-header">
+                <span class="info-text">已选 {{ store.areaPoints.length }} / 4 个角点</span>
+                <el-button type="danger" link size="small" @click="store.clearAreaPoints">清空角点</el-button>
+              </div>
+
+              <button class="hud-btn success" @click="generatePath" :disabled="store.areaPoints.length !== 4">
+                <el-icon><MapLocation /></el-icon> 生成路径
+              </button>
+            </div>
+          </el-tab-pane>
+
+
           <el-tab-pane label="地图" name="offline">
              <button class="hud-btn success" @click="handleSaveMap">
                 <el-icon><MapLocation /></el-icon> 下载当前视野
@@ -95,12 +128,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, reactive, watch } from 'vue';
 import { useGcsStore } from '../store/useGcsStore';
 import { storeToRefs } from 'pinia';
-import { ElMessageBox } from 'element-plus';
+import { ElMessageBox, ElMessage } from 'element-plus';
 import Sortable from 'sortablejs';
 import { Upload, Close, ArrowRight, ArrowLeft, Grid, MapLocation } from '@element-plus/icons-vue';
+import * as turf from '@turf/turf';
 
 const store = useGcsStore();
 const { mission } = storeToRefs(store);
@@ -109,8 +143,26 @@ const isCollapsed = ref(false);
 const activeTab = ref('mission');
 const tableRef = ref(null);
 
+const areaParams = reactive({
+  horizontalSpacing: 20,
+  verticalSpacing: 20,
+  isVertical: false,
+});
+
+// --- 监听 Tab 切换来改变模式 ---
+watch(activeTab, (newTab) => {
+  if (newTab === 'mission') {
+    store.setPlannerMode('manual');
+  } else if (newTab === 'area') {
+    store.setPlannerMode('area');
+  }
+});
+
 // --- 拖拽排序初始化 ---
 onMounted(() => {
+  // 初始化时，根据默认 tab 设置模式
+  store.setPlannerMode(activeTab.value === 'mission' ? 'manual' : 'area');
+
   const tbody = document.querySelector('.draggable-table .el-table__body-wrapper tbody');
   if (tbody) {
     Sortable.create(tbody, {
@@ -141,7 +193,7 @@ const confirmRemove = (index) => {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
       type: 'warning',
-      customClass: 'hud-message-box' // 下面会自定义这个样式适配暗黑风
+      customClass: 'hud-message-box'
     }
   ).then(() => {
     // 1. 删除数据
@@ -190,6 +242,87 @@ const handleDownload = () => {
 };
 const handleSaveMap = () => store.triggerMapSave();
 
+// --- 区域规划 ---
+const generatePath = () => {
+  if (store.areaPoints.length !== 4) {
+    ElMessage.error("请先在地图上选择4个角点");
+    return;
+  }
+
+  try {
+    const waypoints = calculateSPath(store.areaPoints, areaParams);
+    const startSeq = mission.value.plannedWaypoints.length;
+    const newWaypoints = waypoints.map((pt, index) => ({
+      seq: startSeq + index + 1,
+      lat: pt[1],
+      lng: pt[0],
+      speed: mission.value.defaults.speed,
+      loiter: mission.value.defaults.loiter,
+    }));
+
+    mission.value.plannedWaypoints.push(...newWaypoints);
+    store.clearAreaPoints(); // 清理临时点
+    store.triggerRedraw();
+    ElMessage.success(`成功生成 ${waypoints.length} 个航点`);
+    activeTab.value = 'mission'; // 跳转回航线 tab
+
+  } catch (error) {
+    console.error("路径生成失败:", error);
+    ElMessage.error("路径生成失败: " + error.message);
+  }
+};
+
+function calculateSPath(points, params) {
+  const { horizontalSpacing, verticalSpacing, isVertical } = params;
+  const polygon = turf.polygon([ [...points, points[0]].map(p => [p.lng, p.lat]) ]);
+
+  const bbox = turf.bbox(polygon); // [minLng, minLat, maxLng, maxLat]
+  const west = bbox[0];
+  const south = bbox[1];
+  const east = bbox[2];
+  const north = bbox[3];
+
+  const waypoints = [];
+  let isForward = true;
+
+  if (isVertical) {
+    // 垂直作业
+    for (let lng = west; lng <= east; lng += horizontalSpacing / 111320) { // 简易经度转换
+      const line = turf.lineString([[lng, south], [lng, north]]);
+      const intersections = turf.lineIntersect(line, polygon);
+
+      if (intersections.features.length > 0) {
+        let segmentPoints = intersections.features.map(f => f.geometry.coordinates);
+        segmentPoints.sort((a, b) => a[1] - b[1]); // 按纬度排序
+
+        if (!isForward) segmentPoints.reverse();
+
+        waypoints.push(...segmentPoints);
+
+        isForward = !isForward;
+      }
+    }
+  } else {
+    // 水平作业
+    for (let lat = south; lat <= north; lat += verticalSpacing / 111320) { // 简易纬度转换
+      const line = turf.lineString([[west, lat], [east, lat]]);
+      const intersections = turf.lineIntersect(line, polygon);
+
+      if (intersections.features.length > 0) {
+        let segmentPoints = intersections.features.map(f => f.geometry.coordinates);
+        segmentPoints.sort((a, b) => a[0] - b[0]); // 按经度排序
+
+        if (!isForward) segmentPoints.reverse();
+
+        waypoints.push(...segmentPoints);
+
+        isForward = !isForward;
+      }
+    }
+  }
+  return waypoints;
+}
+
 </script>
 
 <style scoped>
@@ -201,6 +334,9 @@ const handleSaveMap = () => store.triggerMapSave();
 .panel-content-wrapper { width: 100%; padding: 10px 15px; }
 
 /* --- 新增样式 --- */
+.area-controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
+.area-controls .input-group { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #ddd; }
+.area-controls .hud-input { width: 80px; }
 
 /* 默认值设置栏 */
 .defaults-bar {

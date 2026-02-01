@@ -23,6 +23,8 @@
         </div>
       </el-popover>
 
+      <ConnectionManager/>
+
       <div class="divider"></div>
 
       <el-popover placement="bottom" :width="240" trigger="click" popper-class="hud-popover">
@@ -41,10 +43,11 @@
           <h4>飞行模式选择</h4>
           <div class="mode-grid">
             <button class="mode-btn" @click="changeMode('OFFBOARD')">地面控制</button>
-            <button class="mode-btn" @click="enableFollowMode">指点模式</button>
-            <button class="mode-btn" @click="changeMode('MISSION')">自动任务</button>
+            <button class="mode-btn" @click="changeMode('MISSION')" :disabled="mission.plannedWaypoints.length === 0">
+              自动任务
+            </button>
             <button class="mode-btn" @click="changeMode('HOLD')">暂停模式</button>
-            <button class="mode-btn danger" @click="changeMode('RTL')">一键返航</button>
+            <button class="mode-btn" @click="changeMode('RTL')">前往目标</button>
           </div>
         </div>
       </el-popover>
@@ -61,25 +64,46 @@
           <p>经度: {{ (vehicle.position.lng ?? 0).toFixed(6) }}</p>
           <p>纬度: {{ (vehicle.position.lat ?? 0).toFixed(6) }}</p>
           <el-divider style="margin: 10px 0; border-color: #555"/>
-          <el-button type="warning" size="small" style="width: 100%" @click="setHomePoint">
-            设为返航点 (Home)
+          <el-button type="primary" size="small" style="width: 100%" @click="setHomePoint">
+            设为返航点
           </el-button>
         </div>
       </el-popover>
 
-      <el-popover placement="bottom" :width="180" trigger="hover" popper-class="hud-popover">
+      <el-popover placement="bottom" :width="200" trigger="hover" popper-class="hud-popover">
         <template #reference>
-          <div class="hud-item">
-            <span class="hud-value" :style="{color: getBatColor}">
-              {{ ((vehicle.battery.percent ?? 0) * 100).toFixed(0) }}<small>%</small>
+          <div class="hud-item bat-item-hud" :class="{ 'bat-alarm': hasBatAlarms }">
+            <span class="hud-value" :style="{color: hasBatAlarms ? '#fff' : getBatColor}">
+              {{ vehicle.battery.remaining_percent ?? 0 }}<small>%</small>
             </span>
             <span class="hud-label">BAT</span>
           </div>
         </template>
         <div class="popover-content">
           <h4>电源状态</h4>
-          <p>电压: {{ (vehicle.battery.voltage ?? 0).toFixed(2) }} V</p>
-          <p>电流: {{ (vehicle.battery.current ?? 0).toFixed(1) }} A</p>
+          <div class="bat-detail-grid">
+            <div class="bat-item">
+              <el-icon>
+                <Lightning/>
+              </el-icon>
+              <span>{{ (vehicle.battery.voltage_v ?? 0).toFixed(2) }} V</span>
+            </div>
+            <div class="bat-item">
+              <el-icon>
+                <Odometer/>
+              </el-icon>
+              <span>{{ (vehicle.battery.current_a ?? 0).toFixed(1) }} A</span>
+            </div>
+            <div class="bat-item">
+              <el-icon>
+                <Sunny/>
+              </el-icon> <!-- 用 Sunny 代替温度图标 -->
+              <span>{{ (vehicle.battery.temperature ?? 0).toFixed(1) }} °C</span>
+            </div>
+          </div>
+          <div v-if="vehicle.battery.alarms && vehicle.battery.alarms.length > 0" class="bat-alarms">
+            <span v-for="alarm in vehicle.battery.alarms" :key="alarm" class="alarm-tag">{{ alarm }}</span>
+          </div>
         </div>
       </el-popover>
 
@@ -203,6 +227,18 @@
             </div>
 
             <div class="mission-center-stat">
+              <div class="manual-wp-jump">
+                <el-input-number
+                    v-model="manualWaypointIndex"
+                    :min="1"
+                    :max="totalWaypoints"
+                    size="small"
+                    controls-position="right"
+                    placeholder="航点"
+                />
+                <button class="jump-btn" @click="jumpToWaypoint">跳转</button>
+              </div>
+
               <div class="wp-counter">
                 <span class="label">WAYPOINT</span>
                 <span class="val">{{ currentWaypointIndex }} <span class="divider">/</span> {{ totalWaypoints }}</span>
@@ -247,27 +283,21 @@
       </div>
     </div>
 
-    <el-dialog v-model="followDialog.visible" title="指点跟随" width="300px" :show-close="false" class="hud-dialog"
-               align-center>
+    <el-dialog v-model="gotoDialog.visible" title="目标设定" width="320px" :show-close="false" class="hud-dialog"
+               align-center append-to-body>
       <div class="follow-form">
         <div class="form-item"><label>目标经度</label><span class="coord-val">{{
-            followDialog.target.lng.toFixed(7)
+            gotoDialog.target.lng.toFixed(7)
           }}</span></div>
         <div class="form-item"><label>目标纬度</label><span class="coord-val">{{
-            followDialog.target.lat.toFixed(7)
+            gotoDialog.target.lat.toFixed(7)
           }}</span></div>
-        <div class="form-item input-item"><label>速度 (m/s)</label>
-          <el-input-number v-model="followDialog.speed" :min="0.5" :max="5.0" :step="0.1" size="small"/>
-        </div>
-        <div class="form-item input-item"><label>朝向 (deg)</label>
-          <el-input-number v-model="followDialog.heading" :min="0" :max="360" :step="5" size="small"/>
-        </div>
       </div>
       <template #footer>
-            <span class="dialog-footer">
-            <el-button @click="followDialog.visible = false" class="hud-btn-cancel">取消</el-button>
-            <el-button type="primary" @click="confirmFollow" class="hud-btn-confirm">执行</el-button>
-            </span>
+        <span class="dialog-footer">
+          <el-button @click="gotoDialog.visible = false" class="hud-btn-cancel">取消</el-button>
+          <el-button type="primary" @click="confirmGoto" class="hud-btn-confirm">确认</el-button>
+        </span>
       </template>
     </el-dialog>
 
@@ -279,8 +309,20 @@ import {computed, onMounted, onUnmounted, ref, watch} from 'vue';
 import {useGcsStore} from '../store/useGcsStore';
 import {storeToRefs} from 'pinia';
 import VirtualJoystick from '../components/Cockpit/VirtualJoystick.vue';
-import {Aim, Bell, Link, Loading, SwitchButton, VideoPause, VideoPlay} from '@element-plus/icons-vue';
-import {ElMessage, ElMessageBox} from 'element-plus';
+import ConnectionManager from '../components/Common/ConnectionManager.vue';
+import {
+  Aim,
+  Bell,
+  Lightning,
+  Link,
+  Loading,
+  Odometer,
+  Sunny,
+  SwitchButton,
+  VideoPause,
+  VideoPlay
+} from '@element-plus/icons-vue';
+import {ElMessageBox, ElNotification} from 'element-plus';
 
 const store = useGcsStore();
 const {vehicle, sysLogs, mission, mapTriggers} = storeToRefs(store);
@@ -288,39 +330,43 @@ const {vehicle, sysLogs, mission, mapTriggers} = storeToRefs(store);
 // --- 状态变量 ---
 const offboardSubMode = ref('STEADY');
 const missionState = ref('EXECUTING');
-const followDialog = ref({visible: false, target: {lat: 0, lng: 0}, speed: 1.5, heading: 0});
+const gotoDialog = ref({visible: false, target: {lat: 0, lng: 0}, heading: 0});
+const manualWaypointIndex = ref(1);
 
 // 计算倒序日志（最新的在上面）
 const reversedLogs = computed(() => {
   return [...(sysLogs.value || [])].reverse();
 });
 
-// --- 自动重连逻辑 (需求2) ---
+// --- 自动重连逻辑 ---
 let reconnectTimer = null;
 watch(() => vehicle.value.connected, (connected) => {
   if (!connected) {
     if (!reconnectTimer) {
-      console.log("Detect Offline, starting auto-reconnect...");
-      reconnectTimer = setInterval(() => {
-        store.sendPacket('CMD_CONNECT_VEHICLE');
-      }, 3000); // 每3秒尝试重连
+      reconnectTimer = setInterval(() => store.sendPacket('CMD_CONNECT_VEHICLE'), 3000);
     }
   } else {
     if (reconnectTimer) {
       clearInterval(reconnectTimer);
       reconnectTimer = null;
-      ElMessage.success("飞控已连接");
+      ElNotification.success({title: '系统消息', message: '飞控已连接'});
     }
+    // 飞控连接成功后：
+    // 1. 下载任务
+    store.sendPacket("CMD_DOWNLOAD_MISSION", {});
+    // 2. 聚焦地图到飞控位置
+    store.mapTriggers.centerMap = true;
   }
 }, {immediate: true});
 
 // --- 辅助计算 ---
-const getBatColor = computed(() => vehicle.value.battery.percent > 0.3 ? '#67c23a' : '#f56c6c');
+const getBatColor = computed(() => vehicle.value.battery.remaining_percent > 0.3 ? '#67c23a' : '#f56c6c');
+const hasBatAlarms = computed(() => vehicle.value.battery.alarms && vehicle.value.battery.alarms.length > 0);
 const currentWaypointIndex = computed(() => mission.value.progress.total > 0 ? mission.value.progress.current + 1 : 0);
 const totalWaypoints = computed(() => mission.value.progress.total);
 const missionProgress = computed(() => {
   const {total, current} = mission.value.progress;
-  return total ? Math.min(Math.max((current / total) * 100, 0), 100) : 0;
+  return total > 0 ? Math.min(((current + 1) / total) * 100, 100) : 0;
 });
 const getLogLevelClass = (level) => {
   if (level.includes('ERROR') || level.includes('FAIL')) return 'log-error';
@@ -329,68 +375,107 @@ const getLogLevelClass = (level) => {
 };
 
 // --- 动作逻辑 ---
-const changeMode = (mode) => {
-  store.sendPacket('CMD_SET_MODE', {mode: mode});
+const changeMode = (mode, payload_extra = {}) => {
+  if (mode === 'MISSION' && mission.value.plannedWaypoints.length === 0) {
+    ElNotification.warning({title: '操作提示', message: "飞控上无任务，无法切换到任务模式"});
+    return;
+  }
+
+  let payload = {mode: mode, ...payload_extra};
+
+  if (mode === 'MISSION' && missionState.value === 'PAUSED' && !payload.mission_item_index) {
+    if (mission.value.progress && mission.value.progress.total > 0) {
+      let nextIndex = mission.value.progress.current;
+      if (nextIndex < mission.value.progress.total) {
+        payload.mission_item_index = mission.value.progress.current || 0;
+      }
+    }
+  }
+
+  store.sendPacket('CMD_SET_MODE', payload);
   if (mode === 'MISSION') {
     missionState.value = 'EXECUTING';
-    store.setRelay(1)
+    // 延时2秒开启特种混合器
+    setTimeout(() => {
+      store.setRelay(1);
+      ElNotification.success({title: '系统消息', message: '特种混合器已开启'});
+    }, 2000);
+  } else if (mode === 'HOLD') {
+    // 进入 HOLD 模式，关闭特种混合器
+    store.setRelay(0);
+    ElNotification.info({title: '系统消息', message: '特种混合器已关闭'});
+  }
+};
+
+const jumpToWaypoint = () => {
+  if (manualWaypointIndex.value > 0 && manualWaypointIndex.value <= totalWaypoints.value) {
+    ElMessageBox.confirm(`确定要跳转到航点 ${manualWaypointIndex.value} 吗？`, '航点跳转', {
+      confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning',
+      customClass: 'hud-message-box'
+    }).then(() => {
+      const targetIndex = manualWaypointIndex.value - 1;
+      changeMode('MISSION', {mission_item_index: targetIndex});
+      ElNotification.success({title: '指令发送', message: `已发送指令，跳转到航点 ${manualWaypointIndex.value}`});
+    });
+  } else {
+    ElNotification.error({title: '错误', message: '无效的航点索引'});
   }
 };
 
 const handleSubModeChange = (val) => {
   offboardSubMode.value = val;
   store.sendPacket('CMD_SET_OFFBOARD_SUBMODE', {submode: val});
-  ElMessage.info(`切换至 ${val === 'STEADY' ? '稳态' : '特技'}模式`);
+  ElNotification.info({title: '模式切换', message: `切换至 ${val === 'STEADY' ? '稳态' : '特技'}模式`});
 };
 
-// 回到小船 (需求4)
 const handleCenterMap = () => {
-  // 假设 store 中有这个 trigger，BaseMap 会监听它
   store.mapTriggers.centerMap = true;
-
 };
 
 const controlMission = (action) => {
+  if (action === 'RESUME') {
+    changeMode('MISSION');
+    return;
+  }
   store.sendPacket('CMD_MISSION_CONTROL', {action: action});
-  if (action === 'PAUSE') missionState.value = 'PAUSED';
-  if (action === 'RESUME') missionState.value = 'EXECUTING';
+  if (action === 'PAUSE') {
+    missionState.value = 'PAUSED';
+    store.setRelay(0)
+  }
 };
 
-// 取消任务 (需求7后半部分)
 const cancelMission = () => {
   ElMessageBox.confirm('确定要终止任务并悬停吗？', '终止任务', {
     confirmButtonText: '终止', cancelButtonText: '继续', type: 'warning',
     customClass: 'hud-message-box'
   }).then(() => {
     store.sendPacket('CMD_MISSION_CONTROL', {action: 'RESET'});
-    // 2. 立即切换到 Offboard
     changeMode('OFFBOARD');
   });
 };
 
-const enableFollowMode = () => {
-  ElMessage.success('请在地图上点击目标点');
-  store.mapTriggers.isSelectingTarget = true;
-};
-
-watch(() => store.mapTriggers.selectedTarget, (newTarget) => {
-  if (newTarget && store.mapTriggers.isSelectingTarget) {
-    followDialog.value.target = newTarget;
-    followDialog.value.visible = true;
-    store.mapTriggers.isSelectingTarget = false;
+// --- 指点模式逻辑 ---
+watch(() => mapTriggers.value.gotoTargetCandidate, (newTarget) => {
+  if (newTarget) {
+    gotoDialog.value.target = newTarget;
+    gotoDialog.value.visible = true;
+    // 清除候选，防止重复触发
+    store.setGotoTargetCandidate(null);
   }
 }, {deep: true});
 
-const confirmFollow = () => {
-  store.sendPacket('CMD_FOLLOW_TARGET', {
-    lat: followDialog.value.target.lat, lng: followDialog.value.target.lng,
-    speed: followDialog.value.speed, heading: followDialog.value.heading
+const confirmGoto = () => {
+  store.sendPacket('CMD_SET_HOME', {
+    lat: gotoDialog.value.target.lat,
+    lon: gotoDialog.value.target.lng,
+    alt: 0
   });
-  followDialog.value.visible = false;
+  gotoDialog.value.visible = false;
+  ElNotification.info({title: '指令发送', message: "在飞行任务中点击前往目标，执行命令"});
 };
 
+
 const sendArmCommand = (action, force) => {
-  // ... 保持原有逻辑 ...
   const cmd = action === 'ARM' ? 'CMD_ARM' : 'CMD_DISARM';
   if (force) {
     ElMessageBox.confirm(`确定要强制 ${action} 吗？这极其危险！`, '危险操作', {
@@ -405,65 +490,42 @@ const sendArmCommand = (action, force) => {
 };
 
 const setHomePoint = () => {
-  store.sendPacket('CMD_CUSTOM_ACTION', {action: 'SET_HOME_CURRENT'});
-  ElMessage.success('已请求设为返航点');
+  if (vehicle.value.position && vehicle.value.position.lat) {
+    store.setHome(vehicle.value.position.lat, vehicle.value.position.lng, vehicle.value.position.alt || 0);
+    ElNotification.success({title: '设置成功', message: '已请求将当前位置设为返航点'});
+  } else {
+    ElNotification.warning({title: '设置失败', message: '无法获取当前位置，无法设置返航点'});
+  }
 };
 
-// --- 摇杆逻辑 (修改版) ---
-const controlState = ref({throttle: 0.0, steering: 0.0}); // 改名：x -> throttle, r -> steering
-const targetYaw = ref(0.0); // 维护目标航向
+// --- 摇杆逻辑 ---
+const controlState = ref({throttle: 0.0, steering: 0.0});
+const targetYaw = ref(0.0);
 let controlLoop = null;
 
-// 增益配置
 const GAINS = {
-  STEADY_YAW_RATE: 30.0, // deg/s (积分速度)
-  STEADY_THRUST: 1.0,    // 0-1
-  ACRO_VX: 1.0,          // m/s
-  ACRO_YAW_RATE: 6.0    // deg/s
+  STEADY_YAW_RATE: 30.0,
+  STEADY_THRUST: 1.0,
+  ACRO_VX: 1.0,
+  ACRO_YAW_RATE: 6.0
 };
 
-// 启动控制循环
 onMounted(() => {
   controlLoop = setInterval(() => {
-    // 仅在 OFFBOARD 模式下发送指令
     if (vehicle.value.mode === 'OFFBOARD') {
-      const dt = 0.1; // 100ms
-      const lx = controlState.value.throttle; // 左摇杆 Y (推力/速度)
-      const rx = controlState.value.steering; // 右摇杆 X (转向)
-
+      const dt = 0.1;
+      const lx = controlState.value.throttle;
+      const rx = controlState.value.steering;
       let packet = {};
-
       if (offboardSubMode.value === 'STEADY') {
-        // STEADY: 航向锁定 + 推力控制
-        // 积分计算目标航向
         targetYaw.value += rx * GAINS.STEADY_YAW_RATE * dt;
-
-        // 规范化到 0-360 或 -180-180 (可选，视后端需求，这里保持累积值通常也没问题，但最好规范化)
-        // 这里简化处理，直接发送累积值，后端通常能处理
-
-        packet = {
-          x: 0.0, // STEADY 下不用 x
-          y: 0.0,
-          z: lx * GAINS.STEADY_THRUST, // 映射到 thrust
-          r: targetYaw.value // 发送目标角度
-        };
+        packet = {x: 0.0, y: 0.0, z: lx * GAINS.STEADY_THRUST, r: targetYaw.value};
       } else {
-        // ACRO: 速度 + 角速度控制
-        // 在 ACRO 模式下，同步 targetYaw 为当前实际 Yaw，以便切回 STEADY 时平滑
         targetYaw.value = vehicle.value.attitude.yaw;
-
-        packet = {
-          x: lx * GAINS.ACRO_VX, // 映射到 vx
-          y: 0.0,
-          z: 0.0,
-          r: rx * GAINS.ACRO_YAW_RATE // 映射到 yaw_rate
-        };
+        packet = {x: lx * GAINS.ACRO_VX, y: 0.0, z: 0.0, r: rx * GAINS.ACRO_YAW_RATE};
       }
-      console.log(targetYaw.value)
       store.sendPacket("CMD_MANUAL_CONTROL", packet);
     } else {
-      // 非 OFFBOARD 模式下，持续同步 targetYaw 为当前实际 Yaw
-      // 这样一旦切入 OFFBOARD (STEADY)，就会从当前角度开始锁定
       if (vehicle.value.attitude) {
         targetYaw.value = vehicle.value.attitude.yaw;
       }
@@ -471,14 +533,37 @@ onMounted(() => {
   }, 100);
 });
 
+// 节流函数，防止频繁弹窗
+const throttleNotify = (() => {
+  let lastTime = 0;
+  return (msg) => {
+    const now = Date.now();
+    if (now - lastTime > 2000) { // 2秒内只提示一次
+      ElNotification.warning({title: '安全警告', message: msg});
+      lastTime = now;
+    }
+  };
+})();
+
 const handleLeftStick = (vec) => {
-  controlState.value.throttle = vec.y; // 记录原始值 -1 ~ 1
+  if (!vehicle.value.armed) {
+    throttleNotify('请先解锁 (ARM) 车辆才能控制油门！');
+    controlState.value.throttle = 0.0; // 强制归零
+    return;
+  }
+  controlState.value.throttle = vec.y;
 };
 const resetLeftStick = () => {
   controlState.value.throttle = 0.0;
 };
+
 const handleRightStick = (vec) => {
-  controlState.value.steering = vec.x; // 记录原始值 -1 ~ 1
+  if (!vehicle.value.armed) {
+    throttleNotify('请先解锁 (ARM) 车辆才能控制转向！');
+    controlState.value.steering = 0.0; // 强制归零
+    return;
+  }
+  controlState.value.steering = vec.x;
 };
 const resetRightStick = () => {
   controlState.value.steering = 0.0;
@@ -519,7 +604,7 @@ onUnmounted(() => {
   border-radius: 50px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-  z-index: 1000;
+  z-index: 2001;
 }
 
 /* ================== 新增工具栏 ================== */
@@ -589,7 +674,6 @@ onUnmounted(() => {
 
 .hud-label {
   font-size: 9px;
-  color: #888;
   text-transform: uppercase;
   margin-top: -2px;
 }
@@ -887,11 +971,11 @@ small {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 0 40px;
+  padding: 0 20px;
 }
 
 .wp-counter {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   text-align: center;
 }
 
@@ -923,6 +1007,7 @@ small {
   border-radius: 4px;
   overflow: hidden;
   position: relative;
+  margin-bottom: 8px;
 }
 
 .progress-fill {
@@ -945,9 +1030,41 @@ small {
 }
 
 .mission-status-text {
-  margin-top: 8px;
   font-size: 12px;
   color: #aaa;
+}
+
+/* 新增：手动航点跳转样式 */
+.manual-wp-jump {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px; /* 与下方内容拉开距离 */
+  background: rgba(0, 0, 0, 0.3);
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.manual-wp-jump .el-input-number {
+  width: 90px;
+}
+
+.manual-wp-jump .jump-btn {
+  background: #409EFF;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+
+.manual-wp-jump .jump-btn:hover {
+  background: #66b1ff;
+  transform: scale(1.05);
 }
 
 
@@ -1075,6 +1192,56 @@ small {
   font-family: 'Consolas', monospace;
   color: #409EFF;
 }
+
+/* 电池详情样式 */
+.bat-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.bat-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #ddd;
+}
+
+.bat-item .el-icon {
+  font-size: 16px;
+  color: #409EFF;
+}
+
+.bat-alarms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.alarm-tag {
+  background: #f56c6c;
+  color: white;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* BAT HUD Item Styles */
+.bat-item-hud {
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 10px;
+  transition: all 0.3s;
+}
+
+.bat-item-hud.bat-alarm {
+  background: rgba(245, 108, 108, 0.8);
+  color: white;
+  animation: pulse 2s infinite;
+  border-color: #f56c6c;
+}
 </style>
 
 <style>
@@ -1133,6 +1300,14 @@ small {
   border-color: #409EFF;
   color: white;
 }
+
+.mode-btn:disabled {
+  background: rgba(255, 255, 255, 0.02);
+  color: #666;
+  cursor: not-allowed;
+  border-color: rgba(255, 255, 255, 0.05);
+}
+
 
 .mode-btn.danger {
   color: #f56c6c;

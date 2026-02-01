@@ -28,7 +28,7 @@ import { storeToRefs } from 'pinia';
 import { useRoute } from 'vue-router';
 
 const store = useGcsStore();
-const { vehicle, mapTriggers } = storeToRefs(store);
+const { vehicle, mapTriggers, plannerMode, areaPoints, mission } = storeToRefs(store);
 const route = useRoute();
 
 // --- 变量定义 ---
@@ -38,8 +38,11 @@ let baseLayer = null;
 let boatLayerGroup = null;
 let missionLayerGroup = null;
 let trajectoryLayerGroup = null;
+let areaLayerGroup = null;
+let homeLayerGroup = null; // 新增：HOME点图层
 
 let boatMarker = null;
+let homeMarker = null; // 新增：HOME点标记
 let trajectoryPolyline = null;
 let trajectoryShadow = null; // <--- 轨迹阴影
 let autoSaveTimer = null;
@@ -75,25 +78,38 @@ const initMap = () => {
   initOfflineSystem();
   initLayerGroups();
   initBoat();
+  initHome(); // 新增：初始化HOME点
   initTrajectory();
   initGeoman();
+
+  // --- 新增: 地图点击事件 ---
+  map.on('click', handleMapClick);
+  map.on('dblclick', handleMapDblClick); // 新增：双击事件
 };
 
 const initLayerGroups = () => {
   // 定义不同的 pane 来控制层级
+  map.createPane('areaPane');
+  map.getPane('areaPane').style.zIndex = 440;
+
   map.createPane('missionPane');
   map.getPane('missionPane').style.zIndex = 450;
 
   map.createPane('trajectoryPane');
-  map.getPane('trajectoryPane').style.zIndex = 500; // <--- 比 mission 高
+  map.getPane('trajectoryPane').style.zIndex = 500;
 
   map.createPane('boatPane');
   map.getPane('boatPane').style.zIndex = 650;
 
+  map.createPane('homePane'); // 新增：HOME点窗格
+  map.getPane('homePane').style.zIndex = 700; // 最高
+
   // 初始化图层组并分配到对应的 pane
+  areaLayerGroup = L.layerGroup({ pane: 'areaPane' }).addTo(map);
   missionLayerGroup = L.layerGroup({ pane: 'missionPane' }).addTo(map);
   trajectoryLayerGroup = L.layerGroup({ pane: 'trajectoryPane' }).addTo(map);
   boatLayerGroup = L.layerGroup({ pane: 'boatPane' }).addTo(map);
+  homeLayerGroup = L.layerGroup({ pane: 'homePane' }).addTo(map); // 新增
 };
 
 const initOfflineSystem = () => {
@@ -147,6 +163,23 @@ const initBoat = () => {
   }).addTo(boatLayerGroup);
 };
 
+// 新增：初始化HOME点
+const initHome = () => {
+  if (!homeLayerGroup) return;
+  const homeIcon = L.divIcon({
+    className: 'map-home-icon',
+    html: 'T',
+    iconSize: [36, 36],
+    iconAnchor: [18, 18],
+  });
+  homeMarker = L.marker([0, 0], {
+    icon: homeIcon,
+    zIndexOffset: 3000,
+    opacity: 0, // 初始不可见
+  }).addTo(homeLayerGroup);
+};
+
+
 // --- 修改: 初始化轨迹样式 ---
 const initTrajectory = () => {
   if (!trajectoryLayerGroup) return;
@@ -179,13 +212,39 @@ const initGeoman = () => {
   map.pm.toggleControls(false);
 
   map.on('pm:create', (e) => {
+    if (plannerMode.value !== 'manual') return;
     const layer = e.layer;
     const latlngs = layer.getLatLngs();
-    store.updatePlannedMission(latlngs);
+
+    // 将新点附加到现有任务
+    const startSeq = mission.value.plannedWaypoints.length;
+    const newWaypoints = latlngs.map((pt, index) => ({
+      seq: startSeq + index + 1,
+      lat: pt.lat,
+      lng: pt.lng,
+      speed: mission.value.defaults.speed,
+      loiter: mission.value.defaults.loiter,
+    }));
+    mission.value.plannedWaypoints.push(...newWaypoints);
+
     map.removeLayer(layer);
     store.triggerRedraw();
   });
 };
+
+// --- 新增: 地图点击处理 ---
+const handleMapClick = (e) => {
+  if (plannerMode.value === 'area') {
+    store.addAreaPoint(e.latlng);
+  }
+};
+
+// 新增：地图双击处理
+const handleMapDblClick = (e) => {
+  // 任何模式下都允许指点
+  store.setGotoTargetCandidate(e.latlng);
+};
+
 
 const renderMissionFromStore = () => {
   if (!map || !missionLayerGroup) return;
@@ -201,6 +260,9 @@ const renderMissionFromStore = () => {
     color: '#409EFF', weight: 3, opacity: 1, lineJoin: 'round'
   }).addTo(missionLayerGroup);
 
+  // 判断当前是否在 planner 界面
+  const isPlannerPage = route.name === 'planner';
+
   waypoints.forEach((pt, index) => {
     const numberIcon = L.divIcon({
       className: 'map-seq-icon',
@@ -210,17 +272,79 @@ const renderMissionFromStore = () => {
     });
     const marker = L.marker([pt.lat, pt.lng], {
       icon: numberIcon,
-      draggable: true,
+      draggable: isPlannerPage, // 只有在 planner 界面才允许拖动
       zIndexOffset: 1000
     }).addTo(missionLayerGroup);
-    marker.on('dragend', (e) => {
-      const newPos = e.target.getLatLng();
-      store.mission.plannedWaypoints[index].lat = newPos.lat;
-      store.mission.plannedWaypoints[index].lng = newPos.lng;
-      store.triggerRedraw();
-    });
+
+    if (isPlannerPage) {
+      marker.on('dragend', (e) => {
+        const newPos = e.target.getLatLng();
+        store.mission.plannedWaypoints[index].lat = newPos.lat;
+        store.mission.plannedWaypoints[index].lng = newPos.lng;
+        store.triggerRedraw();
+      });
+    }
   });
 };
+
+// --- 新增: 渲染区域选择 ---
+const renderAreaSelection = () => {
+  if (!map || !areaLayerGroup) return;
+  areaLayerGroup.clearLayers();
+  const points = areaPoints.value;
+  if (!points || points.length === 0) return;
+
+  const latlngs = points.map(p => [p.lat, p.lng]);
+
+  // 判断当前是否在 planner 界面
+  const isPlannerPage = route.name === 'planner';
+
+  // 绘制点
+  points.forEach((pt, index) => {
+    const cornerIcon = L.divIcon({
+      className: 'map-corner-icon',
+      html: `<span>${index + 1}</span>`,
+      iconSize: [28, 28],
+      iconAnchor: [14, 14]
+    });
+    const marker = L.marker([pt.lat, pt.lng], {
+      icon: cornerIcon,
+      draggable: isPlannerPage // 只有在 planner 界面才允许拖动
+    }).addTo(areaLayerGroup);
+
+    if (isPlannerPage) {
+      // 添加拖动事件
+      marker.on('dragend', (e) => {
+        const newPos = e.target.getLatLng();
+        // 更新 store 中的点
+        store.areaPoints[index] = newPos;
+        // 触发重绘
+        store.triggerRedraw();
+      });
+    }
+  });
+
+  // 绘制连接线 (虚线)
+  if (latlngs.length > 1) {
+    L.polyline(latlngs, {
+      color: '#67C23A',
+      weight: 3,
+      dashArray: '5, 10',
+      opacity: 0.8
+    }).addTo(areaLayerGroup);
+  }
+
+  // 如果4个点都选了，闭合区域
+  if (latlngs.length === 4) {
+    L.polyline([...latlngs, latlngs[0]], {
+      color: '#67C23A',
+      weight: 3,
+      dashArray: '5, 10',
+      opacity: 0.8
+    }).addTo(areaLayerGroup);
+  }
+};
+
 
 const saveCurrentArea = () => {
   if (baseLayer) {
@@ -253,6 +377,17 @@ watch(() => vehicle.value.attitude.yaw, (newYaw) => {
   }
 });
 
+// 新增：监听HOME点变化
+watch(() => vehicle.value.home, (newHome) => {
+  if (homeMarker && newHome && newHome.lat && newHome.lon) {
+    homeMarker.setLatLng([newHome.lat, newHome.lon]);
+    homeMarker.setOpacity(1); // 设为可见
+  } else if (homeMarker) {
+    homeMarker.setOpacity(0); // 如果没有HOME点，设为不可见
+  }
+}, { deep: true, immediate: true });
+
+
 // --- 修改: 监听轨迹数据变化 ---
 watch(() => vehicle.value.trajectory, (newTrajectory, oldTrajectory) => {
   if (trajectoryPolyline && trajectoryShadow) {
@@ -269,23 +404,40 @@ watch(() => vehicle.value.trajectory, (newTrajectory, oldTrajectory) => {
 
 
 watch(() => mapTriggers.value.redrawMission, (val) => {
-  if (val) renderMissionFromStore();
+  if (val) {
+    renderMissionFromStore();
+    renderAreaSelection(); // 同时重绘区域
+  }
 });
 
 watch(() => mapTriggers.value.clearMap, (val) => {
   if (val && missionLayerGroup) {
     missionLayerGroup.clearLayers();
+    areaLayerGroup.clearLayers(); // 同时清除区域
   }
 });
 
-const handleModeChange = (pageName) => {
-  if (!map) return;
-  if (pageName === 'planner') {
+watch(plannerMode, (newMode) => {
+  if (newMode === 'manual') {
     map.pm.toggleControls(true);
   } else {
     map.pm.toggleControls(false);
     map.pm.disableDraw();
   }
+});
+
+
+const handleModeChange = (pageName) => {
+  if (!map) return;
+  if (pageName === 'planner' && plannerMode.value === 'manual') {
+    map.pm.toggleControls(true);
+  } else {
+    map.pm.toggleControls(false);
+    map.pm.disableDraw();
+  }
+  // 切换页面时，重新渲染任务以更新拖动状态
+  renderMissionFromStore();
+  renderAreaSelection();
 };
 </script>
 
@@ -360,5 +512,36 @@ const handleModeChange = (pageName) => {
 .map-seq-icon:hover {
   transform: scale(1.1);
   background-color: #66b1ff;
+}
+
+.map-corner-icon {
+  background-color: #67C23A;
+  border: 2px solid white;
+  border-radius: 50%;
+  color: white;
+  text-align: center;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-weight: 600;
+  font-size: 14px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+}
+
+/* 新增：HOME点图标样式 */
+.map-home-icon {
+  background-color: #f56c6c;
+  border: 3px solid white;
+  border-radius: 50%;
+  color: white;
+  text-align: center;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-weight: 800;
+  font-size: 20px;
+  font-family: 'Arial Black', sans-serif;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.7);
+  text-shadow: 0 0 5px black;
 }
 </style>
