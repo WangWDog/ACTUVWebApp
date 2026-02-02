@@ -104,6 +104,24 @@
           <div v-if="vehicle.battery.alarms && vehicle.battery.alarms.length > 0" class="bat-alarms">
             <span v-for="alarm in vehicle.battery.alarms" :key="alarm" class="alarm-tag">{{ alarm }}</span>
           </div>
+
+          <el-divider style="margin: 10px 0; border-color: #555"/>
+
+          <div class="bat-settings">
+            <div class="form-item">
+              <label>低电量阈值 (%)</label>
+              <el-input-number
+                  v-model="vehicle.battery.low_battery_threshold"
+                  :min="5" :max="50" :step="1"
+                  size="small"
+                  style="width: 90px"
+                  @change="updateBatThreshold"
+              />
+            </div>
+            <div class="bat-status-row" v-if="vehicle.battery.is_low_battery_rtl_triggered">
+              <span class="status-tag warning">低电量返航中</span>
+            </div>
+          </div>
         </div>
       </el-popover>
 
@@ -301,6 +319,48 @@
       </template>
     </el-dialog>
 
+    <!-- 任务启动确认弹窗 -->
+    <el-dialog v-model="missionStartDialog.visible" title="启动自动任务" width="380px" :show-close="false"
+               class="hud-dialog"
+               align-center append-to-body>
+      <div class="mission-start-form">
+        <div class="safety-check-item">
+          <span class="label">低电量阈值</span>
+          <span class="value warning">{{ vehicle.battery.low_battery_threshold }}%</span>
+        </div>
+        <div class="safety-check-item">
+          <span class="label">返航点 (HOME)</span>
+          <span class="value success" v-if="vehicle.home">
+                {{ vehicle.home.lat.toFixed(6) }}, {{ vehicle.home.lon.toFixed(6) }}
+            </span>
+          <span class="value error" v-else>无效</span>
+        </div>
+
+        <el-divider style="margin: 15px 0; border-color: #444"/>
+
+        <div class="form-item-row">
+          <label>起始航点 (Seq)</label>
+          <el-input-number
+              v-model="missionStartDialog.startIndex"
+              :min="1"
+              :max="totalWaypoints"
+              size="default"
+              controls-position="right"
+              style="width: 120px;"
+          />
+        </div>
+        <div class="hint-text">
+          总航点数: {{ totalWaypoints }}
+        </div>
+      </div>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="missionStartDialog.visible = false" class="hud-btn-cancel">取消</el-button>
+          <el-button type="primary" @click="confirmMissionStart" class="hud-btn-confirm">确认并开始</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
@@ -332,6 +392,7 @@ const offboardSubMode = ref('STEADY');
 const missionState = ref('EXECUTING');
 const gotoDialog = ref({visible: false, target: {lat: 0, lng: 0}, heading: 0});
 const manualWaypointIndex = ref(1);
+const missionStartDialog = ref({visible: false, startIndex: 1});
 
 // 计算倒序日志（最新的在上面）
 const reversedLogs = computed(() => {
@@ -360,8 +421,19 @@ watch(() => vehicle.value.connected, (connected) => {
 }, {immediate: true});
 
 // --- 辅助计算 ---
-const getBatColor = computed(() => vehicle.value.battery.remaining_percent > 0.3 ? '#67c23a' : '#f56c6c');
-const hasBatAlarms = computed(() => vehicle.value.battery.alarms && vehicle.value.battery.alarms.length > 0);
+const getBatColor = computed(() => {
+  if (vehicle.value.battery.remaining_percent <= vehicle.value.battery.low_battery_threshold) {
+    return '#f56c6c';
+  }
+  return vehicle.value.battery.remaining_percent > 30 ? '#67c23a' : '#e6a23c';
+});
+
+const hasBatAlarms = computed(() => {
+  const hasHardwareAlarms = vehicle.value.battery.alarms && vehicle.value.battery.alarms.length > 0;
+  const isLowBat = vehicle.value.battery.remaining_percent <= vehicle.value.battery.low_battery_threshold;
+  return hasHardwareAlarms || isLowBat;
+});
+
 const currentWaypointIndex = computed(() => mission.value.progress.total > 0 ? mission.value.progress.current + 1 : 0);
 const totalWaypoints = computed(() => mission.value.progress.total);
 const missionProgress = computed(() => {
@@ -376,11 +448,52 @@ const getLogLevelClass = (level) => {
 
 // --- 动作逻辑 ---
 const changeMode = (mode, payload_extra = {}) => {
-  if (mode === 'MISSION' && mission.value.plannedWaypoints.length === 0) {
-    ElNotification.warning({title: '操作提示', message: "飞控上无任务，无法切换到任务模式"});
-    return;
-  }
+  if (mode === 'MISSION') {
+    if (mission.value.plannedWaypoints.length === 0) {
+      ElNotification.warning({title: '操作提示', message: "飞控上无任务，无法切换到任务模式"});
+      return;
+    }
 
+    // 检查 Home 点是否有效
+    if (!vehicle.value.health || !vehicle.value.health.is_home_position_ok) {
+      ElNotification.error({title: '安全检查失败', message: "Home点无效，无法进入任务模式！请先设置返航点。"});
+      return;
+    }
+
+    // 检查是否解锁 (ARMED)
+    if (!vehicle.value.armed) {
+      ElMessageBox.alert(
+          '车辆当前处于上锁状态，无法执行自动任务。\n请先切换至 暂停模式 并解锁车辆，再尝试进入任务模式。',
+          '无法进入任务',
+          {
+            confirmButtonText: '知道了',
+            type: 'error',
+            customClass: 'hud-message-box'
+          }
+      );
+      return;
+    }
+
+    // 打开配置对话框
+    let defaultStart = 1;
+    if (mission.value.progress.current >= 0 && mission.value.progress.current < mission.value.progress.total) {
+      defaultStart = mission.value.progress.current + 1;
+    }
+    missionStartDialog.value.startIndex = defaultStart;
+    missionStartDialog.value.visible = true;
+
+  } else {
+    executeChangeMode(mode, payload_extra);
+  }
+};
+
+const confirmMissionStart = () => {
+  const targetIndex = missionStartDialog.value.startIndex - 1;
+  executeChangeMode('MISSION', {mission_item_index: targetIndex});
+  missionStartDialog.value.visible = false;
+};
+
+const executeChangeMode = (mode, payload_extra) => {
   let payload = {mode: mode, ...payload_extra};
 
   if (mode === 'MISSION' && missionState.value === 'PAUSED' && !payload.mission_item_index) {
@@ -403,9 +516,10 @@ const changeMode = (mode, payload_extra = {}) => {
   } else if (mode === 'HOLD') {
     // 进入 HOLD 模式，关闭特种混合器
     store.setRelay(0);
+    sendArmCommand("DISARM")
     ElNotification.info({title: '系统消息', message: '特种混合器已关闭'});
   }
-};
+}
 
 const jumpToWaypoint = () => {
   if (manualWaypointIndex.value > 0 && manualWaypointIndex.value <= totalWaypoints.value) {
@@ -440,6 +554,7 @@ const controlMission = (action) => {
   store.sendPacket('CMD_MISSION_CONTROL', {action: action});
   if (action === 'PAUSE') {
     missionState.value = 'PAUSED';
+    sendArmCommand("DISARM")
     store.setRelay(0)
   }
 };
@@ -451,6 +566,7 @@ const cancelMission = () => {
   }).then(() => {
     store.sendPacket('CMD_MISSION_CONTROL', {action: 'RESET'});
     changeMode('OFFBOARD');
+    store.setRelay(0)
   });
 };
 
@@ -477,15 +593,21 @@ const confirmGoto = () => {
 
 const sendArmCommand = (action, force) => {
   const cmd = action === 'ARM' ? 'CMD_ARM' : 'CMD_DISARM';
-  if (force) {
-    ElMessageBox.confirm(`确定要强制 ${action} 吗？这极其危险！`, '危险操作', {
-      confirmButtonText: '强制执行', cancelButtonText: '取消', type: 'error',
-      customClass: 'hud-message-box'
-    }).then(() => {
-      store.sendPacket(cmd, {force: true});
-    });
+  console.log('sendArmCommand', action);
+  console.log('mode', vehicle.mode);
+  if (vehicle.value.mode === 'HOLD' && action === 'ARM' ) {
+    ElNotification.error({title: '切换失败', message: '无法在HOLD模式下解锁'});
   } else {
-    store.sendPacket(cmd, {force: false});
+    if (force) {
+      ElMessageBox.confirm(`确定要强制 ${action} 吗？这极其危险！`, '危险操作', {
+        confirmButtonText: '强制执行', cancelButtonText: '取消', type: 'error',
+        customClass: 'hud-message-box'
+      }).then(() => {
+        store.sendPacket(cmd, {force: true});
+      });
+    } else {
+      store.sendPacket(cmd, {force: false});
+    }
   }
 };
 
@@ -496,6 +618,12 @@ const setHomePoint = () => {
   } else {
     ElNotification.warning({title: '设置失败', message: '无法获取当前位置，无法设置返航点'});
   }
+};
+
+const updateBatThreshold = (val) => {
+  // 发送指令给下位机同步阈值
+  store.sendPacket('CMD_SET_BATTERY_THRESHOLD', {threshold: val});
+  ElNotification.info({title: '设置更新', message: `低电量阈值已更新为 ${val}%`});
 };
 
 // --- 摇杆逻辑 ---
@@ -538,12 +666,48 @@ const throttleNotify = (() => {
   let lastTime = 0;
   return (msg) => {
     const now = Date.now();
-    if (now - lastTime > 2000) { // 2秒内只提示一次
+    if (now - lastTime > 5000) { // 2秒内只提示一次
       ElNotification.warning({title: '安全警告', message: msg});
       lastTime = now;
     }
   };
 })();
+
+// 低电量报警逻辑
+watch(() => vehicle.value.battery.is_low_battery_rtl_triggered, (newVal) => {
+  if (newVal) {
+    throttleNotify(`低电量报警！电量低于 ${vehicle.value.battery.low_battery_threshold}%，正在触发返航！`);
+    // 强制关闭混合搅拌器
+    if (vehicle.value.relay_on) {
+      store.setRelay(0);
+      ElNotification.warning({title: '系统保护', message: '低电量返航触发，已强制关闭混合搅拌器'});
+    }
+    // 如果当前模式不是 RTL 或 HOLD，则发送 RTL 指令
+    if (vehicle.value.mode !== 'RTL' && vehicle.value.mode !== 'HOLD') {
+      changeMode('RTL');
+      ElNotification.warning({title: '系统保护', message: '低电量触发，自动切换至返航模式 (RTL)'});
+    }
+  }
+});
+
+// 持续监控电量，如果低于阈值也报警（双重保险，或者用于本地触发）
+let batCheckTimer = null;
+onMounted(() => {
+  batCheckTimer = setInterval(() => {
+    if (!vehicle.value.connected) return;
+
+    if (vehicle.value.battery.is_low_battery_rtl_triggered) {
+      throttleNotify(`系统警告：低电量返航保护已触发！`);
+    } else if (vehicle.value.battery.remaining_percent <= vehicle.value.battery.low_battery_threshold) {
+      throttleNotify(`注意：当前电量 ${vehicle.value.battery.remaining_percent}% 低于阈值 ${vehicle.value.battery.low_battery_threshold}%`);
+    }
+  }, 5000);
+});
+
+onUnmounted(() => {
+  if (batCheckTimer) clearInterval(batCheckTimer);
+});
+
 
 const handleLeftStick = (vec) => {
   if (!vehicle.value.armed) {
@@ -1242,6 +1406,74 @@ small {
   animation: pulse 2s infinite;
   border-color: #f56c6c;
 }
+
+/* 电池设置区域 */
+.bat-settings {
+  margin-top: 10px;
+}
+
+.bat-status-row {
+  margin-top: 8px;
+  display: flex;
+  justify-content: center;
+}
+
+.status-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: bold;
+}
+
+.status-tag.warning {
+  background: #e6a23c;
+  color: white;
+  animation: pulse 1s infinite;
+}
+
+/* 任务启动弹窗样式 */
+.mission-start-form {
+  padding: 5px 10px;
+}
+
+.safety-check-item {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 14px;
+  color: #ccc;
+}
+
+.safety-check-item .value {
+  font-family: 'Consolas', monospace;
+  font-weight: bold;
+}
+
+.safety-check-item .value.warning {
+  color: #e6a23c;
+}
+
+.safety-check-item .value.success {
+  color: #67c23a;
+}
+
+.safety-check-item .value.error {
+  color: #f56c6c;
+}
+
+.form-item-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+  color: #eee;
+}
+
+.hint-text {
+  text-align: right;
+  font-size: 12px;
+  color: #888;
+}
 </style>
 
 <style>
@@ -1333,5 +1565,9 @@ small {
 .log-badge .el-badge__content {
   background-color: #f56c6c;
   border: none;
+}
+
+.hud-message-box {
+  white-space: pre-wrap;
 }
 </style>

@@ -14,7 +14,9 @@ export const useGcsStore = defineStore('gcs', () => {
             remaining_percent: 0,
             current_a: 0.0,
             temperature: 0.0,
-            alarms: []
+            alarms: [],
+            low_battery_threshold: 20, // 低电量阈值
+            is_low_battery_rtl_triggered: false  // 低电量返航状态
         },
         gps: {sats: 0, fix: 'No Fix'},
         attitude: {roll: 0, pitch: 0, yaw: 0},
@@ -22,7 +24,8 @@ export const useGcsStore = defineStore('gcs', () => {
         home: null, // 新增：HOME点坐标
         velocity: {speed: 0},
         trajectory: [], //  <--- 轨迹
-        relay_on: false // <--- 继电器状态
+        relay_on: false, // <--- 继电器状态
+        health: {is_global_position_ok: false, is_home_position_ok: false, is_armable: false} // 新增：健康状态
     })
 
     // --- 2. 任务数据 ---
@@ -198,11 +201,22 @@ export const useGcsStore = defineStore('gcs', () => {
                 vehicle.mode = payload.flight_mode;
                 // 修改：直接赋值新的电池对象
                 if (payload.battery) {
-                    vehicle.battery = payload.battery;
+                    // 保留本地配置的阈值
+                    const currentThreshold = vehicle.battery.low_battery_threshold;
+                    Object.assign(vehicle.battery, payload.battery);
+                    vehicle.battery.low_battery_threshold = currentThreshold;
+                    
+                    // 如果下位机发来了 is_low_battery_rtl_triggered，则更新
+                    if (payload.battery.is_low_battery_rtl_triggered !== undefined) {
+                        vehicle.battery.is_low_battery_rtl_triggered = payload.battery.is_low_battery_rtl_triggered;
+                    }
                 }
                 if (payload.gps) vehicle.gps = {sats: payload.gps.sat_count, fix: payload.gps.fix_type};
                 if (payload.home && payload.home.lat && payload.home.lon) {
                     vehicle.home = payload.home;
+                }
+                if (payload.health) {
+                    vehicle.health.is_home_position_ok = payload.health.is_home_position_ok;
                 }
                 break;
             case 'DATA_LOG':
@@ -354,6 +368,10 @@ export const useGcsStore = defineStore('gcs', () => {
 
     // --- 新增: 继电器控制 ---
     function setRelay(state) {
+        if (state && vehicle.battery.is_low_battery_rtl_triggered) {
+            ElNotification.warning({ title: '操作被阻止', message: '低电量返航中，禁止开启混合搅拌器！' });
+            return;
+        }
         sendPacket('CMD_SET_RELAY', {state: state ? 1 : 0});
     }
     
