@@ -646,7 +646,12 @@ onMounted(() => {
       const rx = controlState.value.steering;
       let packet = {};
       if (offboardSubMode.value === 'STEADY') {
-        targetYaw.value += rx * GAINS.STEADY_YAW_RATE * dt;
+        // 如果未解锁，保持目标航向与当前航向一致，防止解锁瞬间旋转
+        if (!vehicle.value.armed) {
+          targetYaw.value = vehicle.value.attitude.yaw;
+        } else {
+          targetYaw.value += rx * GAINS.STEADY_YAW_RATE * dt;
+        }
         packet = {x: 0.0, y: 0.0, z: lx * GAINS.STEADY_THRUST, r: targetYaw.value};
       } else {
         targetYaw.value = vehicle.value.attitude.yaw;
