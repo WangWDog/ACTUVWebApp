@@ -131,7 +131,7 @@
 import { ref, onMounted, reactive, watch } from 'vue';
 import { useGcsStore } from '../store/useGcsStore';
 import { storeToRefs } from 'pinia';
-import { ElMessageBox, ElMessage } from 'element-plus';
+import { ElMessageBox, ElMessage, ElNotification } from 'element-plus';
 import Sortable from 'sortablejs';
 import { Upload, Close, ArrowRight, ArrowLeft, Grid, MapLocation } from '@element-plus/icons-vue';
 import * as turf from '@turf/turf';
@@ -235,6 +235,14 @@ const handleUpload = () => {
   store.sendPacket("CMD_UPLOAD_MISSION", {
     mission_items: missionItems
   });
+
+  // 3. 立即反馈
+  ElNotification.success({
+    title: '任务上传',
+    message: `已请求上传 ${missionItems.length} 个航点`,
+    position: 'top-right'
+  });
+  store.pushNotification('任务上传', `已发起 ${missionItems.length} 个航点上传请求`, 'info');
 };
 
 const handleDownload = () => {

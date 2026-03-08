@@ -1,234 +1,270 @@
 <template>
   <div class="view-container">
 
-    <div class="hud-top-bar">
-
-      <el-popover placement="bottom-start" :width="350" trigger="hover" popper-class="hud-popover log-popover">
-        <template #reference>
-          <div class="hud-item icon-btn">
-            <el-badge :value="sysLogs.length > 0 ? sysLogs.length : ''" :max="99" is-dot class="log-badge">
-              <el-icon>
-                <Bell/>
-              </el-icon>
-            </el-badge>
-            <span class="hud-label-mini">消息</span>
-          </div>
-        </template>
-        <div class="terminal-body">
-          <div v-if="sysLogs.length === 0" class="empty-log">暂无系统消息</div>
-          <div v-for="log in reversedLogs" :key="log.id" class="log-line" :class="getLogLevelClass(log.level)">
-            <span class="log-time">[{{ log.time }}]</span>
-            <span class="log-text">{{ log.text }}</span>
-          </div>
+    <!-- 左侧：控制面板 -->
+    <aside class="side-panel left">
+      <div class="panel-header">
+        <div class="brand">特种搅池器地面站</div>
+        <div class="status-chip" :class="{ 'online': vehicle.connected }">
+          {{ vehicle.connected ? '系统在线' : '系统离线' }}
         </div>
-      </el-popover>
+      </div>
 
-      <ConnectionManager/>
-
-      <div class="divider"></div>
-
-      <el-popover placement="bottom" :width="240" trigger="click" popper-class="hud-popover">
-        <template #reference>
-          <div class="hud-item mode-item" :class="{ 'disconnected': !vehicle.connected }">
-            <el-icon class="status-icon">
+      <div class="panel-scroll-content">
+        <!-- 1. 连接配置 -->
+        <section class="panel-section">
+          <div class="section-header">
+            <el-icon>
               <Link/>
             </el-icon>
-            <div class="col-flex">
-              <span class="hud-value">{{ vehicle.connected ? vehicle.mode : 'OFFLINE' }}</span>
-              <span v-if="vehicle.mode === 'OFFBOARD'" class="sub-mode-tag">{{ offboardSubMode }}</span>
+            <span>连接配置</span>
+          </div>
+          <div class="connection-box">
+            <div class="status-row">
+              <span class="label">后端服务</span>
+              <span :class="['status-dot', isWsConnected ? 'success' : 'error']"></span>
+            </div>
+            <div class="address-row">
+              <span class="address">{{ wsUrl }}</span>
+              <el-button type="primary" link @click="openWsDialog">更改</el-button>
             </div>
           </div>
-        </template>
-        <div class="popover-content">
-          <h4>飞行模式选择</h4>
-          <div class="mode-grid">
-            <button class="mode-btn" @click="changeMode('OFFBOARD')">地面控制</button>
-            <button class="mode-btn" @click="changeMode('MISSION')" :disabled="mission.plannedWaypoints.length === 0">
-              自动任务
+        </section>
+
+        <!-- 2. 特种混合器 -->
+        <section class="panel-section">
+          <div class="section-header">
+            <el-icon>
+              <Lightning/>
+            </el-icon>
+            <span>特种混合器</span>
+          </div>
+          <div class="mode-grid-flat">
+            <button class="mode-btn-flat small" :class="{ 'active': vehicle.relay_on }" @click="store.setRelay(true)">
+              开启
             </button>
-            <button class="mode-btn" @click="changeMode('HOLD')">暂停模式</button>
-            <button class="mode-btn" @click="changeMode('RTL')">前往目标</button>
+            <button class="mode-btn-flat small" :class="{ 'active': !vehicle.relay_on }" @click="store.setRelay(false)">
+              关闭
+            </button>
           </div>
-        </div>
-      </el-popover>
+        </section>
 
-      <el-popover placement="bottom" :width="220" trigger="hover" popper-class="hud-popover">
-        <template #reference>
-          <div class="hud-item">
-            <span class="hud-value">{{ vehicle.gps.sats ?? 0 }}</span>
-            <span class="hud-label">SAT</span>
+        <!-- 3. 飞行模式 -->
+        <section class="panel-section">
+          <div class="section-header">
+            <el-icon>
+              <Menu/>
+            </el-icon>
+            <span>飞行模式</span>
           </div>
-        </template>
-        <div class="popover-content">
-          <p>定位状态: <span class="highlight">{{ vehicle.gps.fix }}</span></p>
-          <p>经度: {{ (vehicle.position.lng ?? 0).toFixed(6) }}</p>
-          <p>纬度: {{ (vehicle.position.lat ?? 0).toFixed(6) }}</p>
-          <el-divider style="margin: 10px 0; border-color: #555"/>
-          <el-button type="primary" size="small" style="width: 100%" @click="setHomePoint">
-            设为返航点
-          </el-button>
-        </div>
-      </el-popover>
+          <div class="mode-grid-flat">
+            <button class="mode-btn-flat small" :class="{ 'active': vehicle.mode === 'OFFBOARD' }"
+                    @click="changeMode('OFFBOARD')">地面控制
+            </button>
+            <button class="mode-btn-flat small" :class="{ 'active': vehicle.mode === 'MISSION' }"
+                    @click="changeMode('MISSION')" :disabled="mission.plannedWaypoints.length === 0">自动任务
+            </button>
+            <button class="mode-btn-flat small" :class="{ 'active': !vehicle.armed }" @click="handlePause">暂停模式
+            </button>
+            <button class="mode-btn-flat small" :class="{ 'active': vehicle.mode === 'RETURN_TO_LAUNCH' }"
+                    @click="changeMode('RTL')">前往目标
+            </button>
+          </div>
+        </section>
 
-      <el-popover placement="bottom" :width="200" trigger="hover" popper-class="hud-popover">
-        <template #reference>
-          <div class="hud-item bat-item-hud" :class="{ 'bat-alarm': hasBatAlarms }">
-            <span class="hud-value" :style="{color: hasBatAlarms ? '#fff' : getBatColor}">
-              {{ vehicle.battery.remaining_percent ?? 0 }}<small>%</small>
-            </span>
-            <span class="hud-label">BAT</span>
+        <!-- 4. 电池设置 -->
+        <section class="panel-section">
+          <div class="section-header">
+            <el-icon>
+              <Setting/>
+            </el-icon>
+            <span>电池设置</span>
           </div>
-        </template>
-        <div class="popover-content">
-          <h4>电源状态</h4>
-          <div class="bat-detail-grid">
-            <div class="bat-item">
-              <el-icon>
-                <Lightning/>
-              </el-icon>
-              <span>{{ (vehicle.battery.voltage_v ?? 0).toFixed(2) }} V</span>
+          <div class="threshold-container">
+            <div class="threshold-info">
+              <span class="threshold-label">低电量返航阈值</span>
+              <span class="threshold-value">{{ vehicle.battery.low_battery_threshold }}%</span>
             </div>
-            <div class="bat-item">
-              <el-icon>
-                <Odometer/>
-              </el-icon>
-              <span>{{ (vehicle.battery.current_a ?? 0).toFixed(1) }} A</span>
-            </div>
-            <div class="bat-item">
-              <el-icon>
-                <Sunny/>
-              </el-icon> <!-- 用 Sunny 代替温度图标 -->
-              <span>{{ (vehicle.battery.temperature ?? 0).toFixed(1) }} °C</span>
-            </div>
+            <el-slider
+                v-model="vehicle.battery.low_battery_threshold"
+                :min="5"
+                :max="50"
+                :step="1"
+                @change="handleThresholdChange"
+                class="hud-slider"
+            />
           </div>
-          <div v-if="vehicle.battery.alarms && vehicle.battery.alarms.length > 0" class="bat-alarms">
-            <span v-for="alarm in vehicle.battery.alarms" :key="alarm" class="alarm-tag">{{ alarm }}</span>
-          </div>
+        </section>
 
-          <el-divider style="margin: 10px 0; border-color: #555"/>
-
-          <div class="bat-settings">
-            <div class="form-item">
-              <label>低电量阈值 (%)</label>
-              <el-input-number
-                  v-model="vehicle.battery.low_battery_threshold"
-                  :min="5" :max="50" :step="1"
-                  size="small"
-                  style="width: 90px"
-                  @change="updateBatThreshold"
-              />
-            </div>
-            <div class="bat-status-row" v-if="vehicle.battery.is_low_battery_rtl_triggered">
-              <span class="status-tag warning">低电量返航中</span>
-            </div>
+        <!-- 5. 交互工具 -->
+        <section class="panel-section">
+          <div class="section-header">
+            <el-icon>
+              <Tools/>
+            </el-icon>
+            <span>交互工具</span>
           </div>
-        </div>
-      </el-popover>
+          <div class="mode-grid-flat">
+            <button class="mode-btn-flat small" @click="handleCenterMap">地图居中</button>
+            <button class="mode-btn-flat small" @click="store.clearTrajectory">清除轨迹</button>
+          </div>
+        </section>
 
-      <div class="hud-item">
-        <span class="hud-value">{{ (vehicle.velocity.speed ?? 0).toFixed(1) }}</span>
-        <span class="hud-label">m/s</span>
+        <!-- 6. 系统维护 -->
+        <section class="panel-section">
+          <div class="section-header">
+            <el-icon>
+              <SwitchButton/>
+            </el-icon>
+            <span>系统维护</span>
+          </div>
+          <div class="mode-grid-flat">
+            <button class="mode-btn-flat small danger-text" @click="store.shutdownFcu">关动力分配</button>
+            <button class="mode-btn-flat small danger-text" @click="store.shutdownPi">关机载电脑</button>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+    <!-- 右侧：消息与日志面板 -->
+    <aside class="side-panel right">
+      <div class="panel-header">
+        <div class="brand">日志信息</div>
+        <div class="status-chip">实时遥测</div>
       </div>
 
-      <div class="hud-item">
-        <span class="hud-value">{{ (vehicle.attitude.yaw ?? 0).toFixed(0) }}°</span>
-        <span class="hud-label">HDG</span>
-      </div>
-
-      <div class="divider"></div>
-
-      <el-popover placement="bottom" :width="200" trigger="click" popper-class="hud-popover">
-        <template #reference>
-          <div class="hud-item arm-item" :class="vehicle.armed ? 'armed' : 'disarmed'">
-            <span class="hud-value status-text">{{ vehicle.armed ? 'ARMED' : 'DISARM' }}</span>
+      <div class="panel-scroll-content">
+        <!-- 日志透传 -->
+        <!-- 消息透传 (原 Notification 内容) -->
+        <section class="panel-section messages-section">
+          <div class="section-header">
+            <el-icon>
+              <Bell/>
+            </el-icon>
+            <span>消息透传</span>
           </div>
-        </template>
-        <div class="popover-content">
-          <h4>电机安全锁</h4>
-          <div class="mode-grid">
-            <button class="mode-btn success" @click="sendArmCommand('ARM', false)">解锁</button>
-            <button class="mode-btn warning" @click="sendArmCommand('DISARM', false)">上锁</button>
-            <button class="mode-btn danger" @click="sendArmCommand('ARM', true)">强制解锁</button>
-            <button class="mode-btn danger" @click="sendArmCommand('DISARM', true)">强制上锁</button>
+          <div class="mini-terminal messages">
+            <div v-if="notificationLogs.length === 0" class="empty-log">暂无系统消息</div>
+            <div v-for="msg in notificationLogs" :key="msg.id" class="log-line-flat" :class="msg.type">
+              <span class="log-time">{{ msg.time }}</span>
+              <span class="log-text">【{{ msg.title }}】{{ msg.message }}</span>
+            </div>
+          </div>
+        </section>
+        <section class="panel-section logs-section">
+          <div class="section-header">
+            <el-icon>
+              <Document/>
+            </el-icon>
+            <span>日志透传</span>
+          </div>
+          <div class="mini-terminal">
+            <div v-if="sysLogs.length === 0" class="empty-log">暂无日志</div>
+            <div v-for="log in reversedLogs.slice(0, 30)" :key="log.id" class="log-line-flat"
+                 :class="getLogLevelClass(log.level)">
+              <span class="log-time">{{ log.time }}</span>
+              <span class="log-text">{{ log.text }}</span>
+            </div>
+          </div>
+        </section>
+
+
+      </div>
+    </aside>
+
+    <!-- 顶部数据展示 HUD -->
+    <div class="hud-top-bar display-only" @wheel="handleHudScroll">
+      <div class="telemetry-group">
+        <div class="telemetry-item">
+          <span class="label">卫星定位</span>
+          <div class="val-group">
+            <span class="value">{{ vehicle.gps.sats ?? 0 }}<small>颗</small></span>
+            <div class="sub-label-wrap"><span class="sub-label">{{ vehicle.gps.fix }}</span></div>
           </div>
         </div>
-      </el-popover>
-
-      <div class="hud-item icon-btn" @click="handleCenterMap" title="回到小船">
-        <el-icon>
-          <Aim/>
-        </el-icon>
-        <span class="hud-label-mini">定位</span>
+        <div class="divider"></div>
+        <div class="telemetry-item">
+          <span class="label">动力电池</span>
+          <div class="val-group">
+            <span class="value" :style="{ color: getBatColor }">{{ vehicle.battery.remaining_percent ?? 0 }}%</span>
+            <div class="sub-label-wrap"><span class="sub-label">{{
+                (vehicle.battery.voltage_v ?? 0).toFixed(2)
+              }}V | {{ (vehicle.battery.current_a ?? 0).toFixed(1) }}A</span></div>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="telemetry-item">
+          <span class="label">电机状态</span>
+          <div class="val-group">
+            <span class="value" :class="vehicle.armed ? 'armed-text' : 'disarmed-text'">{{
+                vehicle.armed ? '已解锁' : '已上锁'
+              }}</span>
+            <div class="sub-label-wrap">
+              <button class="hud-stop-btn" @click="handleSystemStop">系统停机</button>
+            </div>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="telemetry-item">
+          <span class="label">运动状态</span>
+          <div class="val-group">
+            <span class="value">{{ (vehicle.velocity.speed ?? 0).toFixed(1) }}<small>m/s</small></span>
+            <div class="sub-label-wrap"><span class="sub-label">实时航向: {{
+                (vehicle.attitude.yaw ?? 0).toFixed(0)
+              }}°</span></div>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="telemetry-item position-item">
+          <span class="label">当前位置</span>
+          <div class="coords">
+            <span>{{ (vehicle.position.lat ?? 0).toFixed(6) }} N</span>
+            <span>{{ (vehicle.position.lng ?? 0).toFixed(6) }} E</span>
+          </div>
+        </div>
       </div>
-
-      <!-- 新增清除轨迹按钮 -->
-      <div class="hud-item icon-btn" @click="store.clearTrajectory" title="清除轨迹">
-        <el-icon>
-          <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
-            <path fill="currentColor"
-                  d="M896 160H704a32 32 0 0 0-32 32v96h-448V192a32 32 0 0 0-32-32H128a32 32 0 0 0-32 32v160h768V192a32 32 0 0 0-32-32zM128 416v480a32 32 0 0 0 32 32h608a32 32 0 0 0 32-32V416H128zm352 320a32 32 0 0 1-32 32h-96a32 32 0 0 1-32-32V544a32 32 0 0 1 32-32h96a32 32 0 0 1 32 32v192zm192 0a32 32 0 0 1-32 32h-96a32 32 0 0 1-32-32V544a32 32 0 0 1 32-32h96a32 32 0 0 1 32 32v192z"></path>
-          </svg>
-        </el-icon>
-        <span class="hud-label-mini">清迹</span>
-      </div>
-
     </div>
 
-    <!-- 新增工具栏 -->
-    <div class="accessory-bar">
-      <div
-          class="hud-item relay-item"
-          :class="{ 'active': vehicle.relay_on }"
-          @click="store.setRelay(!vehicle.relay_on)"
-      >
-        <span class="hud-label-mini">特种混合器: {{ vehicle.relay_on ? '开' : '关' }}</span>
-      </div>
-    </div>
-
-
+    <!-- 底部控制面板 -->
     <transition name="slide-up">
       <div class="bottom-dashboard" v-if="vehicle.connected && ['OFFBOARD', 'MISSION'].includes(vehicle.mode)">
-
         <template v-if="vehicle.mode === 'OFFBOARD'">
           <div class="joystick-box left">
             <div class="joystick-field">
               <VirtualJoystick @update="handleLeftStick" @end="resetLeftStick" lockY/>
             </div>
-            <span class="stick-label">THROTTLE</span>
+            <span class="stick-label">油门控制</span>
           </div>
-
           <div class="center-panel">
             <div class="manual-controls">
               <div class="mode-switch-group">
                 <div class="switch-item" :class="{ active: offboardSubMode === 'STEADY' }"
-                     @click="handleSubModeChange('STEADY')">稳态
+                     @click="handleSubModeChange('STEADY')">稳态控制
                 </div>
                 <div class="switch-item" :class="{ active: offboardSubMode === 'ACRO' }"
-                     @click="handleSubModeChange('ACRO')">特技
+                     @click="handleSubModeChange('ACRO')">特技控制
                 </div>
               </div>
-              <div class="control-hint">
-                {{ offboardSubMode === 'STEADY' ? '辅助定速控制' : '直接电机控制' }}
+              <div class="control-hint">{{
+                  offboardSubMode === 'STEADY' ? '辅助定速巡航模式' : '直接电机推力控制'
+                }}
               </div>
             </div>
           </div>
-
-
           <div class="joystick-box right">
             <div class="joystick-field">
               <VirtualJoystick @update="handleRightStick" @end="resetRightStick" lockX/>
             </div>
-            <span class="stick-label">STEERING</span>
+            <span class="stick-label">转向控制</span>
           </div>
         </template>
-
         <template v-else-if="vehicle.mode === 'MISSION'">
           <div class="mission-dashboard">
-
+            <!-- 左侧控制 -->
             <div class="mission-side-btn">
               <div
                   class="hud-action-btn"
-                  :class="missionState === 'EXECUTING' ? 'btn-pause' : 'btn-resume'"
+                  :class="[missionState === 'EXECUTING' ? 'btn-pause' : 'btn-resume', { 'btn-disabled': missionState === 'PAUSED' && resumeCooldown > 0 }]"
                   @click="controlMission(missionState === 'EXECUTING' ? 'PAUSE' : 'RESUME')"
               >
                 <el-icon v-if="missionState === 'EXECUTING'">
@@ -238,28 +274,29 @@
                   <VideoPlay/>
                 </el-icon>
                 <div class="btn-text">
-                  <span class="main-text">{{ missionState === 'EXECUTING' ? '暂停' : '继续' }}</span>
-                  <span class="sub-text">{{ missionState === 'EXECUTING' ? 'PAUSE' : 'RESUME' }}</span>
+                  <span class="main-text">{{
+                      missionState === 'EXECUTING' ? '暂停任务' : (resumeCooldown > 0 ? `等待 (${resumeCooldown}s)` : '继续任务')
+                    }}</span>
                 </div>
               </div>
             </div>
 
+            <!-- 中间核心数据 -->
             <div class="mission-center-stat">
               <div class="manual-wp-jump">
-                <el-input-number
-                    v-model="manualWaypointIndex"
-                    :min="1"
-                    :max="totalWaypoints"
-                    size="small"
-                    controls-position="right"
-                    placeholder="航点"
-                />
-                <button class="jump-btn" @click="jumpToWaypoint">跳转</button>
+                <!--                <el-input-number-->
+                <!--                    v-model="manualWaypointIndex"-->
+                <!--                    :min="1"-->
+                <!--                    :max="totalWaypoints"-->
+                <!--                    size="small"-->
+                <!--                    controls-position="right"-->
+                <!--                />-->
+                <button class="jump-btn" @click="jumpToWaypoint">航点跳转</button>
               </div>
 
               <div class="wp-counter">
-                <span class="label">WAYPOINT</span>
-                <span class="val">{{ currentWaypointIndex }} <span class="divider">/</span> {{ totalWaypoints }}</span>
+                <span class="label">航点进度</span>
+                <span class="val">{{ currentWaypointIndex }} / {{ totalWaypoints }}</span>
               </div>
 
               <div class="mission-progress-bar">
@@ -269,25 +306,21 @@
               </div>
 
               <div class="mission-status-text">
-                状态: {{ missionState === 'EXECUTING' ? '正在巡航' : '已暂停等待' }}
+                系统状态: {{ missionState === 'EXECUTING' ? '正在按计划巡航' : '已暂停，等待指令' }}
               </div>
             </div>
 
+            <!-- 右侧操作 -->
             <div class="mission-side-btn">
               <div class="hud-action-btn btn-abort" @click="cancelMission">
                 <el-icon>
                   <SwitchButton/>
                 </el-icon>
-                <div class="btn-text">
-                  <span class="main-text">取消任务</span>
-                  <span class="sub-text">MANUAL</span>
-                </div>
+                <div class="btn-text"><span class="main-text">终止任务</span></div>
               </div>
             </div>
-
           </div>
         </template>
-
       </div>
     </transition>
 
@@ -296,13 +329,25 @@
         <el-icon class="rotating-slow">
           <Loading/>
         </el-icon>
-        <h2>连接断开</h2>
-        <p>正在尝试重新连接飞控...</p>
+        <h2>连接已断开</h2>
+        <p>正在尝试自动重连...</p>
       </div>
     </div>
 
-    <el-dialog v-model="gotoDialog.visible" title="目标设定" width="320px" :show-close="false" class="hud-dialog"
-               align-center append-to-body>
+    <!-- 弹窗统一样式 -->
+    <el-dialog v-model="wsDialog.visible" title="修改后端地址" width="400px" class="hud-dialog" align-center
+               append-to-body>
+      <el-input v-model="wsDialog.newAddress" placeholder="例如: ws://192.168.1.10:8765"/>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="wsDialog.visible = false" class="hud-btn-cancel">取消</el-button>
+          <el-button type="primary" @click="confirmWsChange" class="hud-btn-confirm">确认修改</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="gotoDialog.visible" title="目标设定" width="320px" class="hud-dialog" align-center
+               append-to-body>
       <div class="follow-form">
         <div class="form-item"><label>目标经度</label><span class="coord-val">{{
             gotoDialog.target.lng.toFixed(7)
@@ -314,44 +359,35 @@
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="gotoDialog.visible = false" class="hud-btn-cancel">取消</el-button>
-          <el-button type="primary" @click="confirmGoto" class="hud-btn-confirm">确认</el-button>
+          <el-button type="primary" @click="confirmGoto" class="hud-btn-confirm">确认执行</el-button>
         </span>
       </template>
     </el-dialog>
 
-    <!-- 任务启动确认弹窗 -->
-    <el-dialog v-model="missionStartDialog.visible" title="启动自动任务" width="380px" :show-close="false"
-               class="hud-dialog"
-               align-center append-to-body>
+    <el-dialog v-model="missionStartDialog.visible" title="启动自动任务" width="400px"
+               class="hud-dialog mission-start-dialog" align-center append-to-body :show-close="false">
       <div class="mission-start-form">
-        <div class="safety-check-item">
-          <span class="label">低电量阈值</span>
-          <span class="value warning">{{ vehicle.battery.low_battery_threshold }}%</span>
-        </div>
-        <div class="safety-check-item">
-          <span class="label">返航点 (HOME)</span>
-          <span class="value success" v-if="vehicle.home">
-                {{ vehicle.home.lat.toFixed(6) }}, {{ vehicle.home.lon.toFixed(6) }}
+        <div class="safety-check-group">
+          <div class="safety-check-item">
+            <span class="label">低电量阈值</span>
+            <span class="value warning">{{ vehicle.battery.low_battery_threshold }}%</span>
+          </div>
+          <div class="safety-check-item">
+            <span class="label">目标位置 (Target)</span>
+            <span class="value info" v-if="mission.plannedWaypoints.length > 0">
+              {{ mission.plannedWaypoints[missionStartDialog.startIndex - 1]?.lat.toFixed(6) }}, 
+              {{ mission.plannedWaypoints[missionStartDialog.startIndex - 1]?.lng.toFixed(6) }}
             </span>
-          <span class="value error" v-else>无效</span>
+            <span class="value error" v-else>无航点数据</span>
+          </div>
         </div>
 
-        <el-divider style="margin: 15px 0; border-color: #444"/>
-
-        <div class="form-item-row">
-          <label>起始航点 (Seq)</label>
-          <el-input-number
-              v-model="missionStartDialog.startIndex"
-              :min="1"
-              :max="totalWaypoints"
-              size="default"
-              controls-position="right"
-              style="width: 120px;"
-          />
+        <div class="form-setting-row">
+          <label>起始航点序号</label>
+          <el-input-number v-model="missionStartDialog.startIndex" :min="1" :max="totalWaypoints" size="default"
+                           controls-position="right"/>
         </div>
-        <div class="hint-text">
-          总航点数: {{ totalWaypoints }}
-        </div>
+        <div class="mission-meta">共 {{ totalWaypoints }} 个预设航点</div>
       </div>
       <template #footer>
         <span class="dialog-footer">
@@ -369,35 +405,52 @@ import {computed, onMounted, onUnmounted, ref, watch} from 'vue';
 import {useGcsStore} from '../store/useGcsStore';
 import {storeToRefs} from 'pinia';
 import VirtualJoystick from '../components/Cockpit/VirtualJoystick.vue';
-import ConnectionManager from '../components/Common/ConnectionManager.vue';
 import {
   Aim,
   Bell,
   Lightning,
   Link,
   Loading,
-  Odometer,
-  Sunny,
+  Menu,
+  Unlock,
+  Tools,
+  Delete,
   SwitchButton,
   VideoPause,
-  VideoPlay
+  VideoPlay,
+  Document,
+  Setting
 } from '@element-plus/icons-vue';
 import {ElMessageBox, ElNotification} from 'element-plus';
 
 const store = useGcsStore();
-const {vehicle, sysLogs, mission, mapTriggers} = storeToRefs(store);
+const {vehicle, sysLogs, notificationLogs, mission, mapTriggers, isWsConnected, wsUrl} = storeToRefs(store);
 
 // --- 状态变量 ---
 const offboardSubMode = ref('STEADY');
 const missionState = ref('EXECUTING');
+const lastMissionStartTime = ref(0);
+const lastTargetIndex = ref(0);
+const resumeCooldown = ref(0);
+let cooldownTimer = null;
 const gotoDialog = ref({visible: false, target: {lat: 0, lng: 0}, heading: 0});
-const manualWaypointIndex = ref(1);
 const missionStartDialog = ref({visible: false, startIndex: 1});
+const wsDialog = ref({visible: false, newAddress: ''});
+const manualWaypointIndex = ref(1);
 
-// 计算倒序日志（最新的在上面）
-const reversedLogs = computed(() => {
-  return [...(sysLogs.value || [])].reverse();
-});
+// 计算倒序日志
+const reversedLogs = computed(() => [...(sysLogs.value || [])].reverse());
+
+// --- WebSocket 设置 ---
+const openWsDialog = () => {
+  wsDialog.value.newAddress = wsUrl.value;
+  wsDialog.value.visible = true;
+};
+const confirmWsChange = () => {
+  store.changeWsUrl(wsDialog.value.newAddress);
+  wsDialog.value.visible = false;
+  store.pushNotification('系统消息', '正在更新连接地址...', 'success');
+};
 
 // --- 自动重连逻辑 ---
 let reconnectTimer = null;
@@ -410,28 +463,28 @@ watch(() => vehicle.value.connected, (connected) => {
     if (reconnectTimer) {
       clearInterval(reconnectTimer);
       reconnectTimer = null;
-      ElNotification.success({title: '系统消息', message: '飞控已连接'});
+      store.pushNotification('连接成功', '飞控已建立连接', 'success');
     }
-    // 飞控连接成功后：
-    // 1. 下载任务
     store.sendPacket("CMD_DOWNLOAD_MISSION", {});
-    // 2. 聚焦地图到飞控位置
     store.mapTriggers.centerMap = true;
   }
 }, {immediate: true});
 
+// --- 指点模式逻辑 ---
+watch(() => mapTriggers.value.gotoTargetCandidate, (newTarget) => {
+  if (newTarget) {
+    gotoDialog.value.target = newTarget;
+    gotoDialog.value.visible = true;
+    // 清除候选，防止重复触发
+    store.setGotoTargetCandidate(null);
+  }
+}, {deep: true});
+
 // --- 辅助计算 ---
 const getBatColor = computed(() => {
-  if (vehicle.value.battery.remaining_percent <= vehicle.value.battery.low_battery_threshold) {
-    return '#f56c6c';
-  }
-  return vehicle.value.battery.remaining_percent > 30 ? '#67c23a' : '#e6a23c';
-});
-
-const hasBatAlarms = computed(() => {
-  const hasHardwareAlarms = vehicle.value.battery.alarms && vehicle.value.battery.alarms.length > 0;
-  const isLowBat = vehicle.value.battery.remaining_percent <= vehicle.value.battery.low_battery_threshold;
-  return hasHardwareAlarms || isLowBat;
+  const pct = vehicle.value.battery.remaining_percent;
+  if (pct <= vehicle.value.battery.low_battery_threshold) return '#f56c6c';
+  return pct > 30 ? '#67c23a' : '#e6a23c';
 });
 
 const currentWaypointIndex = computed(() => mission.value.progress.total > 0 ? mission.value.progress.current + 1 : 0);
@@ -448,182 +501,200 @@ const getLogLevelClass = (level) => {
 
 // --- 动作逻辑 ---
 const changeMode = (mode, payload_extra = {}) => {
+
+  if (mode === vehicle.value.mode) {
+    if(!vehicle.value.armed){
+      sendArmCommand('ARM', false);
+    }
+    return;
+  }
+
   if (mode === 'MISSION') {
     if (mission.value.plannedWaypoints.length === 0) {
-      ElNotification.warning({title: '操作提示', message: "飞控上无任务，无法切换到任务模式"});
+      store.pushNotification('操作提示', '无任务航点，无法开始', 'warning');
       return;
     }
-
-    // 检查 Home 点是否有效
-    if (!vehicle.value.health || !vehicle.value.health.is_home_position_ok) {
-      ElNotification.error({title: '安全检查失败', message: "Home点无效，无法进入任务模式！请先设置返航点。"});
-      return;
-    }
-
-    // 检查是否解锁 (ARMED)
-    if (!vehicle.value.armed) {
-      ElMessageBox.alert(
-          '车辆当前处于上锁状态，无法执行自动任务。\n请先切换至 暂停模式 并解锁车辆，再尝试进入任务模式。',
-          '无法进入任务',
-          {
-            confirmButtonText: '知道了',
-            type: 'error',
-            customClass: 'hud-message-box'
-          }
-      );
-      return;
-    }
-
-    // 打开配置对话框
-    let defaultStart = 1;
-    if (mission.value.progress.current >= 0 && mission.value.progress.current < mission.value.progress.total) {
-      defaultStart = mission.value.progress.current + 1;
-    }
+    let defaultStart = (mission.value.progress.current >= 0) ? mission.value.progress.current + 1 : 1;
     missionStartDialog.value.startIndex = defaultStart;
     missionStartDialog.value.visible = true;
-
   } else {
     executeChangeMode(mode, payload_extra);
   }
+  if (['OFFBOARD', 'RTL'].includes(mode)) {
+    if (!vehicle.value.armed) {
+      sendArmCommand('ARM', false);
+    }
+  }
+};
+
+const handlePause = () => {
+  sendArmCommand('DISARM', false);
+  store.setRelay(0);
+  store.pushNotification('暂停模式', '电机已上锁，混合器已关闭', 'warning');
+};
+
+const handleSystemStop = () => {
+  store.setRelay(0);
+  sendArmCommand('DISARM', false);
+  store.pushNotification('系统停机', '已执行紧急停机：混合器关闭，电机上锁', 'error');
 };
 
 const confirmMissionStart = () => {
   const targetIndex = missionStartDialog.value.startIndex - 1;
   executeChangeMode('MISSION', {mission_item_index: targetIndex});
   missionStartDialog.value.visible = false;
+  store.pushNotification('任务启动', `自动巡航任务已从第 ${missionStartDialog.value.startIndex} 航点开始`, 'success');
+  if (!vehicle.value.armed) {
+    sendArmCommand('ARM', false);
+  }
+
+  // 记录启动信息
+  lastMissionStartTime.value = Date.now();
+  lastTargetIndex.value = targetIndex;
 };
 
 const executeChangeMode = (mode, payload_extra) => {
   let payload = {mode: mode, ...payload_extra};
-
-  if (mode === 'MISSION' && missionState.value === 'PAUSED' && !payload.mission_item_index) {
-    if (mission.value.progress && mission.value.progress.total > 0) {
-      let nextIndex = mission.value.progress.current;
-      if (nextIndex < mission.value.progress.total) {
-        payload.mission_item_index = mission.value.progress.current || 0;
-      }
-    }
-  }
-
   store.sendPacket('CMD_SET_MODE', payload);
   if (mode === 'MISSION') {
     missionState.value = 'EXECUTING';
-    // 延时2秒开启特种混合器
-    setTimeout(() => {
-      store.setRelay(1);
-      ElNotification.success({title: '系统消息', message: '特种混合器已开启'});
-    }, 2000);
-  } else if (mode === 'HOLD') {
-    // 进入 HOLD 模式，关闭特种混合器
-    store.setRelay(0);
-    sendArmCommand("DISARM")
-    ElNotification.info({title: '系统消息', message: '特种混合器已关闭'});
+    setTimeout(() => store.setRelay(1), 2000);
   }
 }
+
+// 监听模式异常切回 HOLD 的自动恢复逻辑
+watch(() => vehicle.value.mode, (newMode) => {
+  if (newMode === 'HOLD' && missionState.value === 'EXECUTING') {
+    const now = Date.now();
+    // 如果在开启 5 秒内切回 HOLD
+    if (now - lastMissionStartTime.value < 5000) {
+      store.pushNotification('自动恢复', '检测到任务意外中断，正在尝试重新执行...', 'warning');
+
+      const targetIndex = lastTargetIndex.value;
+      // 重复发送指令
+      store.sendPacket('CMD_MISSION_CONTROL', {action: 'SET_INDEX', index: targetIndex});
+
+      setTimeout(() => {
+        // 如果是因为 Disarm 导致的 HOLD，重新 Arm
+        if (!vehicle.value.armed) {
+          sendArmCommand('ARM', false);
+        }
+        store.sendPacket('CMD_MISSION_CONTROL', {action: 'RESUME'});
+      }, 500);
+    }
+  }
+});
 
 const jumpToWaypoint = () => {
   if (manualWaypointIndex.value > 0 && manualWaypointIndex.value <= totalWaypoints.value) {
     ElMessageBox.confirm(`确定要跳转到航点 ${manualWaypointIndex.value} 吗？`, '航点跳转', {
-      confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning',
-      customClass: 'hud-message-box'
+      type: 'warning'
     }).then(() => {
       const targetIndex = manualWaypointIndex.value - 1;
-      changeMode('MISSION', {mission_item_index: targetIndex});
-      ElNotification.success({title: '指令发送', message: `已发送指令，跳转到航点 ${manualWaypointIndex.value}`});
+      executeChangeMode('MISSION', {mission_item_index: targetIndex});
+      store.pushNotification('指令发送', `已请求跳转到航点 ${manualWaypointIndex.value}`, 'success');
     });
-  } else {
-    ElNotification.error({title: '错误', message: '无效的航点索引'});
   }
 };
 
 const handleSubModeChange = (val) => {
   offboardSubMode.value = val;
   store.sendPacket('CMD_SET_OFFBOARD_SUBMODE', {submode: val});
-  ElNotification.info({title: '模式切换', message: `切换至 ${val === 'STEADY' ? '稳态' : '特技'}模式`});
+  store.pushNotification('模式切换', `手动模式已切换至 ${val === 'STEADY' ? '稳态' : '特技'}`, 'info');
 };
 
 const handleCenterMap = () => {
   store.mapTriggers.centerMap = true;
+  store.pushNotification('地图工具', '已将视角定位至无人艇', 'info');
+};
+
+const handleThresholdChange = (val) => {
+  store.sendPacket('CMD_SET_BATTERY_THRESHOLD', {threshold: val});
+  store.pushNotification('电池设置', `已发送低电量阈值设定: ${val}%`, 'info');
+};
+
+// 修复：HUD 鼠标滚轮横向滚动
+const handleHudScroll = (e) => {
+  const container = e.currentTarget;
+  if (container) {
+    container.scrollLeft += e.deltaY;
+    e.preventDefault(); // 防止触发页面级别的滚动
+  }
 };
 
 const controlMission = (action) => {
   if (action === 'RESUME') {
-    changeMode('MISSION');
+    if (resumeCooldown.value > 0) return;
+    // 恢复任务前：1. 解锁电机 2. 重设当前航点索引 3. 恢复任务
+    const targetIndex = mission.value.progress.current;
+
+    // 记录启动信息以供自动恢复使用
+    lastMissionStartTime.value = Date.now();
+    lastTargetIndex.value = targetIndex;
+
+    store.sendPacket('CMD_MISSION_CONTROL', {action: 'SET_INDEX', index: targetIndex});
+    // 稍作延迟发送继续指令，确保索引设置生效
+    setTimeout(() => {
+      store.sendPacket('CMD_MISSION_CONTROL', {action: 'RESUME'});
+      missionState.value = 'EXECUTING';
+      store.pushNotification('任务恢复', `已解锁电机并从第 ${targetIndex + 1} 航点恢复任务`, 'success');
+      sendArmCommand('ARM', false);
+    }, 200);
+    setTimeout(() => {
+      store.setRelay(1);
+    }, 200);
+
     return;
-  }
-  store.sendPacket('CMD_MISSION_CONTROL', {action: action});
-  if (action === 'PAUSE') {
+  } else if (action === 'PAUSE') {
     missionState.value = 'PAUSED';
-    sendArmCommand("DISARM")
-    store.setRelay(0)
+    sendArmCommand("DISARM", false);
+    store.setRelay(0);
+    store.pushNotification('任务暂停', '任务已暂停，电机已上锁', 'warning');
+
+    // 启动3秒冷却
+    resumeCooldown.value = 3;
+    if (cooldownTimer) clearInterval(cooldownTimer);
+    cooldownTimer = setInterval(() => {
+      resumeCooldown.value--;
+      if (resumeCooldown.value <= 0) {
+        clearInterval(cooldownTimer);
+      }
+    }, 1000);
+    return;
   }
 };
 
 const cancelMission = () => {
-  ElMessageBox.confirm('确定要终止任务并悬停吗？', '终止任务', {
-    confirmButtonText: '终止', cancelButtonText: '继续', type: 'warning',
-    customClass: 'hud-message-box'
-  }).then(() => {
+  ElMessageBox.confirm('确定要终止任务吗？', '终止任务', {type: 'warning'}).then(() => {
+    sendArmCommand("DISARM", false);
     store.sendPacket('CMD_MISSION_CONTROL', {action: 'RESET'});
-    changeMode('OFFBOARD');
-    store.setRelay(0)
+    changeMode('HOLD');
+    store.setRelay(0);
+    store.pushNotification('任务终止', '任务已取消，电机已上锁', 'warning');
   });
 };
-
-// --- 指点模式逻辑 ---
-watch(() => mapTriggers.value.gotoTargetCandidate, (newTarget) => {
-  if (newTarget) {
-    gotoDialog.value.target = newTarget;
-    gotoDialog.value.visible = true;
-    // 清除候选，防止重复触发
-    store.setGotoTargetCandidate(null);
-  }
-}, {deep: true});
-
-const confirmGoto = () => {
-  store.sendPacket('CMD_SET_HOME', {
-    lat: gotoDialog.value.target.lat,
-    lon: gotoDialog.value.target.lng,
-    alt: 0
-  });
-  gotoDialog.value.visible = false;
-  ElNotification.info({title: '指令发送', message: "在飞行任务中点击前往目标，执行命令"});
-};
-
 
 const sendArmCommand = (action, force) => {
-  const cmd = action === 'ARM' ? 'CMD_ARM' : 'CMD_DISARM';
-  console.log('sendArmCommand', action);
-  console.log('mode', vehicle.mode);
-  if (vehicle.value.mode === 'HOLD' && action === 'ARM' ) {
-    ElNotification.error({title: '切换失败', message: '无法在HOLD模式下解锁'});
+  const isArming = (action === 'ARM');
+  // 如果当前状态已经是请求的状态，且不是强制操作，则不执行
+  if (!force && vehicle.value.armed === isArming) return;
+
+  const cmd = isArming ? 'CMD_ARM' : 'CMD_DISARM';
+  if (force) {
+    ElMessageBox.confirm('确定要强制操作吗？极其危险！', '危险操作', {type: 'error'}).then(() => {
+      store.sendPacket(cmd, {force: true});
+      store.pushNotification('危险操作', `已强制发送 ${action} 指令`, 'error');
+    });
   } else {
-    if (force) {
-      ElMessageBox.confirm(`确定要强制 ${action} 吗？这极其危险！`, '危险操作', {
-        confirmButtonText: '强制执行', cancelButtonText: '取消', type: 'error',
-        customClass: 'hud-message-box'
-      }).then(() => {
-        store.sendPacket(cmd, {force: true});
-      });
-    } else {
-      store.sendPacket(cmd, {force: false});
-    }
+    store.sendPacket(cmd, {force: false});
+    store.pushNotification('电机控制', `已发送 ${action === 'ARM' ? '解锁' : '上锁'} 指令`, 'info');
   }
 };
 
-const setHomePoint = () => {
-  if (vehicle.value.position && vehicle.value.position.lat) {
-    store.setHome(vehicle.value.position.lat, vehicle.value.position.lng, vehicle.value.position.alt || 0);
-    ElNotification.success({title: '设置成功', message: '已请求将当前位置设为返航点'});
-  } else {
-    ElNotification.warning({title: '设置失败', message: '无法获取当前位置，无法设置返航点'});
-  }
-};
-
-const updateBatThreshold = (val) => {
-  // 发送指令给下位机同步阈值
-  store.sendPacket('CMD_SET_BATTERY_THRESHOLD', {threshold: val});
-  ElNotification.info({title: '设置更新', message: `低电量阈值已更新为 ${val}%`});
+const confirmGoto = () => {
+  store.sendPacket('CMD_SET_HOME', {lat: gotoDialog.value.target.lat, lon: gotoDialog.value.target.lng, alt: 0});
+  gotoDialog.value.visible = false;
+  store.pushNotification('指点飞行', '已发送前往目标点指令', 'success');
 };
 
 // --- 摇杆逻辑 ---
@@ -631,371 +702,470 @@ const controlState = ref({throttle: 0.0, steering: 0.0});
 const targetYaw = ref(0.0);
 let controlLoop = null;
 
-const GAINS = {
-  STEADY_YAW_RATE: 30.0,
-  STEADY_THRUST: 1.0,
-  ACRO_VX: 1.0,
-  ACRO_YAW_RATE: 6.0
-};
-
 onMounted(() => {
   controlLoop = setInterval(() => {
     if (vehicle.value.mode === 'OFFBOARD') {
-      const dt = 0.1;
       const lx = controlState.value.throttle;
       const rx = controlState.value.steering;
-      let packet = {};
-      if (offboardSubMode.value === 'STEADY') {
-        // 如果未解锁，保持目标航向与当前航向一致，防止解锁瞬间旋转
-        if (!vehicle.value.armed) {
-          targetYaw.value = vehicle.value.attitude.yaw;
-        } else {
-          targetYaw.value += rx * GAINS.STEADY_YAW_RATE * dt;
-        }
-        packet = {x: 0.0, y: 0.0, z: lx * GAINS.STEADY_THRUST, r: targetYaw.value};
-      } else {
-        targetYaw.value = vehicle.value.attitude.yaw;
-        packet = {x: lx * GAINS.ACRO_VX, y: 0.0, z: 0.0, r: rx * GAINS.ACRO_YAW_RATE};
-      }
+      let packet = (offboardSubMode.value === 'STEADY')
+          ? {x: 0, y: 0, z: lx, r: targetYaw.value += rx * 3}
+          : {x: lx, y: 0, z: 0, r: rx * 6};
       store.sendPacket("CMD_MANUAL_CONTROL", packet);
-    } else {
-      if (vehicle.value.attitude) {
-        targetYaw.value = vehicle.value.attitude.yaw;
-      }
     }
   }, 100);
 });
 
-// 节流函数，防止频繁弹窗
-const throttleNotify = (() => {
-  let lastTime = 0;
-  return (msg) => {
-    const now = Date.now();
-    if (now - lastTime > 5000) { // 2秒内只提示一次
-      ElNotification.warning({title: '安全警告', message: msg});
-      lastTime = now;
-    }
-  };
-})();
-
-// 低电量报警逻辑
-watch(() => vehicle.value.battery.is_low_battery_rtl_triggered, (newVal) => {
-  if (newVal) {
-    throttleNotify(`低电量报警！电量低于 ${vehicle.value.battery.low_battery_threshold}%，正在触发返航！`);
-    // 强制关闭混合搅拌器
-    if (vehicle.value.relay_on) {
-      store.setRelay(0);
-      ElNotification.warning({title: '系统保护', message: '低电量返航触发，已强制关闭混合搅拌器'});
-    }
-    // 如果当前模式不是 RTL 或 HOLD，则发送 RTL 指令
-    if (vehicle.value.mode !== 'RTL' && vehicle.value.mode !== 'HOLD') {
-      changeMode('RTL');
-      ElNotification.warning({title: '系统保护', message: '低电量触发，自动切换至返航模式 (RTL)'});
-    }
-  }
-});
-
-// 持续监控电量，如果低于阈值也报警（双重保险，或者用于本地触发）
-let batCheckTimer = null;
-onMounted(() => {
-  batCheckTimer = setInterval(() => {
-    if (!vehicle.value.connected) return;
-
-    if (vehicle.value.battery.is_low_battery_rtl_triggered) {
-      throttleNotify(`系统警告：低电量返航保护已触发！`);
-    } else if (vehicle.value.battery.remaining_percent <= vehicle.value.battery.low_battery_threshold) {
-      throttleNotify(`注意：当前电量 ${vehicle.value.battery.remaining_percent}% 低于阈值 ${vehicle.value.battery.low_battery_threshold}%`);
-    }
-  }, 5000);
-});
-
-onUnmounted(() => {
-  if (batCheckTimer) clearInterval(batCheckTimer);
-});
-
-
-const handleLeftStick = (vec) => {
-  if (!vehicle.value.armed) {
-    throttleNotify('请先解锁 (ARM) 车辆才能控制油门！');
-    controlState.value.throttle = 0.0; // 强制归零
-    return;
-  }
-  controlState.value.throttle = vec.y;
-};
-const resetLeftStick = () => {
-  controlState.value.throttle = 0.0;
-};
-
-const handleRightStick = (vec) => {
-  if (!vehicle.value.armed) {
-    throttleNotify('请先解锁 (ARM) 车辆才能控制转向！');
-    controlState.value.steering = 0.0; // 强制归零
-    return;
-  }
-  controlState.value.steering = vec.x;
-};
-const resetRightStick = () => {
-  controlState.value.steering = 0.0;
-};
+const handleLeftStick = (vec) => controlState.value.throttle = vec.y;
+const resetLeftStick = () => controlState.value.throttle = 0;
+const handleRightStick = (vec) => controlState.value.steering = vec.x;
+const resetRightStick = () => controlState.value.steering = 0;
 
 onUnmounted(() => {
   if (controlLoop) clearInterval(controlLoop);
   if (reconnectTimer) clearInterval(reconnectTimer);
+  if (cooldownTimer) clearInterval(cooldownTimer);
 });
 </script>
 
 <style scoped>
-/* 全屏容器，无边框 */
 .view-container {
   width: 100vw;
   height: 100vh;
   position: fixed;
   top: 0;
   left: 0;
-  pointer-events: none;
+  background: transparent;
+  color: #fff;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   overflow: hidden;
-  z-index: 100;
+  pointer-events: none;
 }
 
-/* ================== 顶部 HUD 栏 ================== */
-.hud-top-bar {
-  pointer-events: auto;
+/* ================== 通用侧边面板样式 ================== */
+.side-panel {
   position: absolute;
-  top: 15px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: rgba(20, 20, 20, 0.75);
-  backdrop-filter: blur(12px);
-  padding: 6px 16px;
-  border-radius: 50px;
+  top: 20px;
+  bottom: 20px;
+  width: 260px; /* 压缩宽度 */
+  background: rgba(20, 20, 20, 0.88);
+  backdrop-filter: blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-  z-index: 2001;
-}
-
-/* ================== 新增工具栏 ================== */
-.accessory-bar {
-  pointer-events: auto;
-  position: absolute;
-  top: 68px; /* 位于主HUD下方 */
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 30px;
-  background: rgba(20, 20, 20, 0.7);
-  backdrop-filter: blur(10px);
-  padding: 4px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
-}
-
-.relay-item {
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: rgba(255, 51, 51, 0.94);
-  color: #ccc;
-  transition: all 0.3s;
-}
-
-.relay-item.active {
-  background: #67c23a;
-  color: white;
-  box-shadow: 0 0 10px rgba(103, 194, 58, 0.5);
-}
-
-
-.divider {
-  width: 1px;
-  height: 24px;
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.hud-item {
+  border-radius: 20px;
+  padding: 16px 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 0 8px;
-  cursor: pointer;
-  transition: all 0.2s;
-  color: white;
+  z-index: 1000;
+  pointer-events: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
 }
 
-.hud-item:hover {
-  opacity: 0.8;
+.side-panel.left {
+  left: 20px;
 }
 
-.icon-btn {
-  flex-direction: row;
-  gap: 5px;
-  min-width: 55px;
+.side-panel.right {
+  right: 20px;
 }
 
-.icon-btn .el-icon {
-  font-size: 20px;
+.panel-header {
+  padding: 0 16px 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.hud-label {
-  font-size: 9px;
-  text-transform: uppercase;
-  margin-top: -2px;
+.panel-scroll-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  /* 核心逻辑：空间充足时分散对齐，空间不足时保持最小间距并滚动 */
+  justify-content: space-between;
+  gap: 16px; /* 最小间距限制 */
 }
 
-.hud-label-mini {
-  font-size: 15px;
-  font-weight: bold;
+/* 确保在内容很少时，也能有一个最小高度支撑 space-between */
+.panel-scroll-content > :last-child {
+  margin-bottom: 8px;
 }
 
-.hud-value {
-  font-family: 'DIN Alternate', 'Roboto Mono', monospace;
+.panel-scroll-content::-webkit-scrollbar {
+  width: 3px;
+}
+
+.panel-scroll-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+
+.brand {
   font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
+  font-weight: 900;
+  color: #409EFF;
+  text-shadow: 0 0 10px rgba(64, 158, 255, 0.4);
 }
 
-small {
-  font-size: 10px;
+.status-chip {
+  font-size: 11px;
+  font-weight: bold;
+  margin-top: 4px;
+  color: #f56c6c;
+  opacity: 0.9;
 }
 
-.mode-item {
-  background: #409EFF;
-  padding: 4px 12px;
-  border-radius: 4px;
-  flex-direction: row;
+.status-chip.online {
+  color: #67c23a;
+}
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: bold;
+  color: #888;
+  text-transform: uppercase;
+}
+
+.connection-box {
+  background: rgba(255, 255, 255, 0.04);
+  padding: 10px;
+  border-radius: 10px;
+}
+
+.threshold-container {
+  background: rgba(255, 255, 255, 0.04);
+  padding: 12px;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
-.mode-item.disconnected {
-  background: #5a5a5a;
-  color: #aaa;
-}
-
-.col-flex {
+.threshold-info {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  justify-content: space-between;
+  align-items: center;
 }
 
-.sub-mode-tag {
-  font-size: 9px;
-  background: rgba(0, 0, 0, 0.2);
-  padding: 0 4px;
-  border-radius: 2px;
-  margin-top: 2px;
+.threshold-label {
+  font-size: 13px;
+  color: #ccc;
 }
 
-.arm-item {
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 4px 10px;
-}
-
-.arm-item.disarmed {
-  border-color: #409EFF;
+.threshold-value {
+  font-size: 15px;
+  font-weight: bold;
   color: #409EFF;
 }
 
-.arm-item.armed {
-  background: rgba(245, 108, 108, 0.8);
-  color: white;
-  animation: pulse 2s infinite;
+:deep(.hud-slider) {
+  padding: 0 4px;
 }
 
-/* ================== 底部仪表盘容器 ================== */
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot.success {
+  background: #67c23a;
+  box-shadow: 0 0 8px #67c23a;
+}
+
+.status-dot.error {
+  background: #f56c6c;
+}
+
+.address-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #666;
+}
+
+.address {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+/* 按钮网格：支持一行两个 */
+.mode-grid-flat {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.mode-btn-flat.small {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #ccc;
+  border-radius: 8px;
+  padding: 10px 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: bold;
+  font-size: 13px;
+  text-align: center;
+}
+
+.mode-btn-flat.small:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: #409EFF;
+}
+
+.mode-btn-flat.small.active {
+  background: #409EFF;
+  border-color: #409EFF;
+  color: white;
+}
+
+.mode-btn-flat.small:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
+}
+
+.danger-text {
+  color: #f56c6c !important;
+}
+
+/* 终端样式 */
+.mini-terminal {
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 10px;
+  padding: 10px;
+  height: 220px;
+  overflow-y: auto;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 12px;
+}
+
+.mini-terminal.messages {
+  height: 280px;
+}
+
+.log-line-flat {
+  margin-bottom: 4px;
+  display: flex;
+  gap: 8px;
+  line-height: 1.3;
+}
+
+.log-time {
+  color: #555;
+  white-space: nowrap;
+}
+
+.log-error {
+  color: #f56c6c;
+}
+
+.log-warn {
+  color: #e6a23c;
+}
+
+/* 消息透传颜色 */
+.msg-success .log-text {
+  color: #67c23a;
+}
+
+.msg-error .log-text {
+  color: #f56c6c;
+}
+
+.msg-warning .log-text {
+  color: #e6a23c;
+}
+
+.msg-info .log-text {
+  color: #409EFF;
+}
+
+/* ================== 顶部数据 HUD ================== */
+.hud-top-bar.display-only {
+  position: absolute;
+  top: 20px;
+  left: 300px;
+  right: 300px; /* 避开左右面板 */
+  height: 90px;
+  background: rgba(20, 20, 20, 0.75);
+  backdrop-filter: blur(15px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 15px;
+  display: flex;
+  align-items: center;
+  padding: 0 30px;
+  z-index: 900;
+  pointer-events: auto;
+  overflow-x: auto; /* 开启水平滚动 */
+  overflow-y: hidden;
+}
+
+/* 滚动条美化 */
+.hud-top-bar.display-only::-webkit-scrollbar {
+  height: 4px;
+}
+
+.hud-top-bar.display-only::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+
+.telemetry-group {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  justify-content: space-between;
+}
+
+.telemetry-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 110px;
+  flex-shrink: 0;
+}
+
+.telemetry-item .label {
+  font-size: 11px;
+  font-weight: bold;
+  color: #888;
+}
+
+.telemetry-item .value {
+  font-family: 'DIN Alternate', sans-serif;
+  font-size: 24px;
+  font-weight: bold;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.telemetry-item small {
+  font-size: 11px;
+  margin-left: 4px;
+  opacity: 0.6;
+}
+
+.telemetry-item .sub-label {
+  font-size: 13px;
+  color: #ffffff;
+  font-weight: 900;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+
+.coords {
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: bold;
+  color: #409EFF;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.divider {
+  width: 1px;
+  height: 40px;
+  background: rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+}
+
+.armed-text {
+  color: #f56c6c;
+  text-shadow: 0 0 15px rgba(245, 108, 108, 0.6);
+}
+
+.disarmed-text {
+  color: #67c23a;
+  text-shadow: 0 0 15px rgba(103, 194, 58, 0.6);
+}
+
+.hud-stop-btn {
+  background: rgba(245, 108, 108, 0.15);
+  border: 1px solid rgba(245, 108, 108, 0.4);
+  color: #f56c6c;
+  font-size: 11px;
+  font-weight: bold;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.hud-stop-btn:hover {
+  background: rgba(245, 108, 108, 0.3);
+  box-shadow: 0 0 10px rgba(245, 108, 108, 0.3);
+}
+
+.hud-stop-btn:active {
+  transform: scale(0.95);
+}
+
+/* ================== 底部仪表盘 ================== */
 .bottom-dashboard {
   pointer-events: auto;
   position: absolute;
   bottom: 80px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 85%;
-  max-width: 900px;
-  height: 170px; /* 高度固定 */
-
+  left: 300px;
+  right: 300px; /* 与顶部 HUD 宽度保持一致 */
+  height: 160px;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.95), rgba(0, 0, 0, 0.6));
   backdrop-filter: blur(12px);
   border-radius: 24px;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 0 40px;
   z-index: 1000;
-  overflow: hidden; /* 防止内容溢出 */
 }
 
-/* ================== OFFBOARD 模式样式 ================== */
-
-/* 摇杆区域 - 垂直居中，不再偏移 */
-.stick-area {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  width: 140px;
-  /* 移除 top: -20px，让 flex 自动居中 */
-}
-
-.stick-name {
-  font-size: 10px;
-  color: #555;
-  font-weight: bold;
-  letter-spacing: 1px;
-}
-
-/* 修改 joystick-box：作为整体容器 */
 .joystick-box {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  width: 140px;
-  height: 170px;
-  /* background: rgba(0, 0, 0, 0.3); */
-  padding: 10px;
-  border-radius: 20px;
-  /* backdrop-filter: blur(5px); */
-  box-sizing: border-box;
+  width: 120px;
+  height: 100%;
 }
 
-/* 新增：摇杆的专属区域 */
 .joystick-field {
   width: 100%;
-  flex: 1; /* 关键：占据除文字外的所有剩余空间 */
-  position: relative; /* 建立定位基准，让 NippleJS 相对于这个框居中 */
-  min-height: 120px; /* 保证摇杆有足够的操作空间 */
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* 调整文字样式 */
 .stick-label {
-  margin-top: 5px; /* 与摇杆拉开一点距离 */
+  margin-top: -10px;
+  padding-bottom: 10px;
   font-size: 12px;
-  color: #ccc;
+  color: #aaa;
   font-weight: bold;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  /* 确保文字不会拦截点击，但在 flex 布局下通常不需要 */
-  pointer-events: none;
 }
 
-/* 中间控制面板 */
 .center-panel {
   flex: 1;
-  height: 100%;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
-.manual-controls {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1007,11 +1177,10 @@ small {
   border-radius: 8px;
   padding: 4px;
   border: 1px solid rgba(255, 255, 255, 0.15);
-  margin-bottom: 8px;
 }
 
 .switch-item {
-  padding: 8px 30px;
+  padding: 8px 20px;
   font-size: 14px;
   color: #888;
   cursor: pointer;
@@ -1023,27 +1192,23 @@ small {
 .switch-item.active {
   background: #333;
   color: #409EFF;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .control-hint {
   font-size: 12px;
   color: #666;
+  margin-top: 10px;
 }
 
-
-/* ================== MISSION 模式样式 (新布局) ================== */
-
+/* ================== MISSION 模式样式 (严格同步 back.vue) ================== */
 .mission-dashboard {
   width: 100%;
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* 移除 padding，因为外层容器已有 padding */
 }
 
-/* 左右侧按钮容器 */
 .mission-side-btn {
   width: 160px;
   display: flex;
@@ -1051,7 +1216,6 @@ small {
   align-items: center;
 }
 
-/* 通用大按钮样式 */
 .hud-action-btn {
   width: 100%;
   height: 60px;
@@ -1069,71 +1233,36 @@ small {
   transform: scale(0.96);
 }
 
-.hud-action-btn .el-icon {
-  font-size: 24px;
-}
-
-.btn-text {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  line-height: 1.2;
-}
-
 .btn-text .main-text {
   font-size: 16px;
   font-weight: bold;
   color: white;
 }
 
-.btn-text .sub-text {
-  font-size: 9px;
-  font-weight: bold;
-  opacity: 0.6;
-  letter-spacing: 1px;
-}
-
-/* 暂停样式 (黄色背景) */
 .btn-pause {
   background: rgba(230, 162, 60, 0.2);
   border-color: rgba(230, 162, 60, 0.4);
   color: #e6a23c;
 }
 
-.btn-pause:hover {
-  background: rgba(230, 162, 60, 0.35);
-  box-shadow: 0 0 15px rgba(230, 162, 60, 0.2);
-}
-
-/* 继续样式 (绿色背景) */
 .btn-resume {
   background: rgba(103, 194, 58, 0.2);
   border-color: rgba(103, 194, 58, 0.4);
   color: #67c23a;
-  animation: pulse-border-green 2s infinite;
 }
 
-.btn-resume:hover {
-  background: rgba(103, 194, 58, 0.35);
-}
-
-/* 取消/中止样式 (红色背景) */
 .btn-abort {
   background: rgba(245, 108, 108, 0.2);
   border-color: rgba(245, 108, 108, 0.4);
   color: #f56c6c;
 }
 
-.btn-abort:hover {
-  background: rgba(245, 108, 108, 0.35);
-  box-shadow: 0 0 15px rgba(245, 108, 108, 0.2);
+.btn-disabled {
+  opacity: 0.5;
+  cursor: not-allowed !important;
+  pointer-events: none;
 }
 
-.btn-abort .main-text {
-  color: #f56c6c;
-}
-
-/* 中间状态显示 */
 .mission-center-stat {
   flex: 1;
   display: flex;
@@ -1141,6 +1270,28 @@ small {
   align-items: center;
   justify-content: center;
   padding: 0 20px;
+}
+
+.manual-wp-jump {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.jump-btn {
+  background: #409EFF;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: bold;
 }
 
 .wp-counter {
@@ -1160,13 +1311,7 @@ small {
   font-family: 'DIN Alternate', sans-serif;
   font-size: 28px;
   color: white;
-}
-
-.wp-counter .divider {
-  color: #444;
-  font-size: 20px;
-  margin: 0 4px;
-  background: none;
+  font-weight: bold;
 }
 
 .mission-progress-bar {
@@ -1203,43 +1348,8 @@ small {
   color: #aaa;
 }
 
-/* 新增：手动航点跳转样式 */
-.manual-wp-jump {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px; /* 与下方内容拉开距离 */
-  background: rgba(0, 0, 0, 0.3);
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.manual-wp-jump .el-input-number {
-  width: 90px;
-}
-
-.manual-wp-jump .jump-btn {
-  background: #409EFF;
-  color: white;
-  border: none;
-  padding: 6px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: bold;
-  transition: all 0.2s;
-}
-
-.manual-wp-jump .jump-btn:hover {
-  background: #66b1ff;
-  transform: scale(1.05);
-}
-
-
-/* ================== 通用动画与杂项 ================== */
 .offline-mask {
-  pointer-events: auto;
+  z-index: 2000;
   position: absolute;
   top: 0;
   left: 0;
@@ -1250,62 +1360,13 @@ small {
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 2000;
-}
-
-.offline-box {
-  text-align: center;
-  color: white;
+  pointer-events: auto;
 }
 
 .rotating-slow {
   animation: rotate 3s linear infinite;
   font-size: 40px;
   margin-bottom: 10px;
-}
-
-/* 日志弹窗 */
-.log-popover .terminal-body {
-  max-height: 300px;
-  overflow-y: auto;
-  font-family: monospace;
-  font-size: 11px;
-  background: #111;
-  padding: 10px;
-  border-radius: 4px;
-}
-
-.log-line {
-  margin-bottom: 3px;
-  border-bottom: 1px solid #222;
-  padding-bottom: 2px;
-}
-
-.log-time {
-  color: #555;
-  margin-right: 5px;
-}
-
-.log-text {
-  color: #ccc;
-}
-
-.log-error .log-text {
-  color: #f56c6c;
-}
-
-.log-warn .log-text {
-  color: #e6a23c;
-}
-
-/* 动画定义 */
-.slide-up-enter-active, .slide-up-leave-active {
-  transition: all 0.5s cubic-bezier(0.19, 1, 0.22, 1);
-}
-
-.slide-up-enter-from, .slide-up-leave-to {
-  transform: translate(-50%, 100%);
-  opacity: 0;
 }
 
 @keyframes rotate {
@@ -1317,262 +1378,153 @@ small {
   }
 }
 
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(245, 108, 108, 0.7);
-  }
-  70% {
-    box-shadow: 0 0 0 10px rgba(0, 0, 0, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
-  }
+/* ================== 统一对话框样式 (深黑主题) ================== */
+:deep(.hud-dialog) {
+  background: #000000 !important;
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 20px;
 }
 
-@keyframes pulse-border-green {
-  0% {
-    border-color: rgba(103, 194, 58, 0.4);
-  }
-  50% {
-    border-color: rgba(103, 194, 58, 1);
-  }
-  100% {
-    border-color: rgba(103, 194, 58, 0.4);
-  }
+:deep(.el-input__wrapper) {
+  background-color: #111 !important;
+  box-shadow: 0 0 0 1px #333 inset !important;
 }
 
-/* 弹窗表单 */
-.follow-form {
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-  padding: 10px 0;
+:deep(.el-input__inner) {
+  color: white !important;
 }
 
-.form-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  color: #ddd;
-  font-size: 14px;
-}
-
-.coord-val {
-  font-family: 'Consolas', monospace;
-  color: #409EFF;
-}
-
-/* 电池详情样式 */
-.bat-detail-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.bat-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #ddd;
-}
-
-.bat-item .el-icon {
-  font-size: 16px;
-  color: #409EFF;
-}
-
-.bat-alarms {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.alarm-tag {
-  background: #f56c6c;
-  color: white;
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-/* BAT HUD Item Styles */
-.bat-item-hud {
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 4px 10px;
-  transition: all 0.3s;
-}
-
-.bat-item-hud.bat-alarm {
-  background: rgba(245, 108, 108, 0.8);
-  color: white;
-  animation: pulse 2s infinite;
-  border-color: #f56c6c;
-}
-
-/* 电池设置区域 */
-.bat-settings {
-  margin-top: 10px;
-}
-
-.bat-status-row {
-  margin-top: 8px;
-  display: flex;
-  justify-content: center;
-}
-
-.status-tag {
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 4px;
+.hud-btn-confirm {
+  background: #409EFF;
+  border: none;
   font-weight: bold;
 }
 
-.status-tag.warning {
-  background: #e6a23c;
-  color: white;
-  animation: pulse 1s infinite;
+.hud-btn-cancel {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid #444;
+  color: #999;
 }
 
-/* 任务启动弹窗样式 */
-.mission-start-form {
-  padding: 5px 10px;
+.slide-up-enter-active, .slide-up-leave-active {
+  transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.safety-check-item {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: 14px;
-  color: #ccc;
-}
-
-.safety-check-item .value {
-  font-family: 'Consolas', monospace;
-  font-weight: bold;
-}
-
-.safety-check-item .value.warning {
-  color: #e6a23c;
-}
-
-.safety-check-item .value.success {
-  color: #67c23a;
-}
-
-.safety-check-item .value.error {
-  color: #f56c6c;
-}
-
-.form-item-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 5px;
-  color: #eee;
-}
-
-.hint-text {
-  text-align: right;
-  font-size: 12px;
-  color: #888;
+.slide-up-enter-from, .slide-up-leave-to {
+  transform: translate(-50%, 120%);
+  opacity: 0;
 }
 </style>
 
+<!-- 全局覆盖：处理 Element Plus 弹窗深色主题 -->
 <style>
-.hud-popover.el-popover {
-  background: rgba(20, 20, 20, 0.95) !important;
-  border: 1px solid #444 !important;
-  color: #eee !important;
-  backdrop-filter: blur(10px);
-  padding: 12px !important;
+.el-dialog__title {
+  font-size: 20px;
+  color: white;
+  font-weight: 900;
 }
 
-.hud-popover .el-popper__arrow::before {
-  background: rgba(20, 20, 20, 0.95) !important;
-  border-color: #444 !important;
+.el-dialog__body {
+  color: white;
+  font-size: 18px;
+  padding: 0px 20px;
 }
 
-.popover-content h4 {
-  margin: 0 0 10px 0;
-  color: #888;
-  font-size: 10px;
-  letter-spacing: 1px;
+.el-dialog {
+  background: #000000 !important;
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 20px;
 }
 
-.popover-content p {
+.mission-start-dialog .mission-start-form {
+  padding: 10px 0;
+}
+
+.mission-start-dialog .safety-check-group {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 15px;
+  margin-bottom: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.mission-start-dialog .safety-check-item {
   display: flex;
   justify-content: space-between;
-  font-size: 13px;
-  color: #ccc;
-  margin: 4px 0;
+  align-items: center;
+  margin-bottom: 12px;
+
 }
 
-.highlight {
-  color: #409EFF;
+.mission-start-dialog .safety-check-item:last-child {
+  margin-bottom: 0;
+}
+
+.mission-start-dialog .safety-check-item .label {
+  font-size: 14px;
+  color: white;
+}
+
+.mission-start-dialog .safety-check-item .value {
+  font-family: 'Roboto Mono', monospace;
   font-weight: bold;
+  font-size: 15px;
 }
 
-.mode-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+.mission-start-dialog .safety-check-item .value.warning {
+  color: #e6a23c;
 }
 
-.mode-btn {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #ccc;
-  padding: 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 12px;
-  transition: all 0.2s;
+.mission-start-dialog .safety-check-item .value.info {
+  color: #409EFF;
 }
 
-.mode-btn:hover {
-  background: #409EFF;
-  border-color: #409EFF;
-  color: white;
-}
-
-.mode-btn:disabled {
-  background: rgba(255, 255, 255, 0.02);
-  color: #666;
-  cursor: not-allowed;
-  border-color: rgba(255, 255, 255, 0.05);
-}
-
-
-.mode-btn.danger {
+.mission-start-dialog .safety-check-item .value.error {
   color: #f56c6c;
-  border-color: rgba(245, 108, 108, 0.3);
 }
 
-.mode-btn.danger:hover {
-  background: #f56c6c;
+.mission-start-dialog .form-setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 25px;
+}
+
+.mission-start-dialog .form-setting-row label {
+  font-size: 14px;
+  font-weight: bold;
+  color: #eee;
+}
+
+.mission-start-dialog .mission-meta {
+  text-align: right;
+  font-size: 14px;
   color: white;
+  margin-top: 8px;
+  font-style: italic;
 }
 
-.mode-btn.success {
-  color: #67c23a;
-  border-color: rgba(103, 194, 58, 0.3);
+/* 覆盖 Element Plus 数字输入框 */
+.mission-start-dialog .el-input-number.is-controls-right .el-input-number__decrease,
+.mission-start-dialog .el-input-number.is-controls-right .el-input-number__increase {
+  background: #1a1a1a !important;
+  border-color: #333 !important;
+  color: #bbb !important;
 }
 
-.mode-btn.success:hover {
-  background: #67c23a;
-  color: white;
+.mission-start-dialog .el-input-number.is-controls-right .el-input-number__decrease:hover,
+.mission-start-dialog .el-input-number.is-controls-right .el-input-number__increase:hover {
+  color: #409EFF !important;
 }
 
-/* 消息框的 badge 颜色 */
-.log-badge .el-badge__content {
-  background-color: #f56c6c;
-  border: none;
+.mission-start-dialog .el-input-number .el-input__wrapper {
+  background: #0a0a0a !important;
+  box-shadow: 0 0 0 1px #333 inset !important;
 }
 
-.hud-message-box {
-  white-space: pre-wrap;
+.mission-start-dialog .el-input-number .el-input__inner {
+  color: #fff !important;
 }
 </style>

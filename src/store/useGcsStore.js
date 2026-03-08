@@ -53,12 +53,24 @@ export const useGcsStore = defineStore('gcs', () => {
     })
 
     const sysLogs = reactive([]);
+    const notificationLogs = ref([]); // 新增：全局消息透传日志
+
+    function pushNotification(title, message, type = 'info') {
+        notificationLogs.value.unshift({
+            id: Date.now() + Math.random(),
+            time: new Date().toLocaleTimeString(),
+            title,
+            message,
+            type: `msg-${type}`
+        });
+        if (notificationLogs.value.length > 50) notificationLogs.value.pop();
+    }
 
     // --- WebSocket 相关变量 ---
     let socket = null;
     let reconnectTimer = null;
     const isWsConnected = ref(false);
-    const wsUrl = ref(localStorage.getItem('wsUrl') || 'ws://10.91.63.246:8765');
+    const wsUrl = ref(localStorage.getItem('wsUrl') || 'ws://10.91.63.214:8765');
 
 
     // ==========================================
@@ -74,13 +86,13 @@ export const useGcsStore = defineStore('gcs', () => {
         socket.onopen = () => {
             console.log("后端连接成功!");
             isWsConnected.value = true;
-            ElNotification.success({ title: '系统消息', message: '地面站后端已连接' });
+            pushNotification('系统消息', '地面站后端已连接', 'success');
             if (reconnectTimer) {
                 clearInterval(reconnectTimer);
                 reconnectTimer = null;
             }
             sendPacket("CMD_CONNECT_VEHICLE", {});
-            // 移除：连接后自动下载任务 (改为在飞控连接后触发)
+            sendPacket("CMD_GET_RECENT_LOGS", {}); // 连接时获取历史日志
         };
         socket.binaryType = "arraybuffer";
         const decoder = new TextDecoder('utf-8');
@@ -137,16 +149,16 @@ export const useGcsStore = defineStore('gcs', () => {
 
     function changeWsUrl(newUrl) {
         if (newUrl === wsUrl.value) {
-            ElNotification.info({ title: '提示', message: "新地址与当前地址相同，无需更改。" });
+            pushNotification('提示', '新地址与当前地址相同，无需更改', 'info');
             return;
         }
 
         const doChange = () => {
             wsUrl.value = newUrl;
             localStorage.setItem('wsUrl', newUrl);
-            ElNotification.success({ title: '系统消息', message: "连接地址已更新，正在重新连接..." });
+            pushNotification('系统消息', '连接地址已更新，正在重新连接...', 'success');
             disconnectWebSocket();
-            setTimeout(connectWebSocket, 500); // 稍作延迟以确保旧连接完全关闭
+            setTimeout(connectWebSocket, 500); 
         };
 
         if (isWsConnected.value) {
@@ -162,7 +174,7 @@ export const useGcsStore = defineStore('gcs', () => {
             ).then(() => {
                 doChange();
             }).catch(() => {
-                ElNotification.info({ title: '提示', message: "已取消更改。" });
+                pushNotification('提示', '已取消更改', 'info');
             });
         } else {
             doChange();
@@ -201,15 +213,7 @@ export const useGcsStore = defineStore('gcs', () => {
                 vehicle.mode = payload.flight_mode;
                 // 修改：直接赋值新的电池对象
                 if (payload.battery) {
-                    // 保留本地配置的阈值
-                    const currentThreshold = vehicle.battery.low_battery_threshold;
                     Object.assign(vehicle.battery, payload.battery);
-                    vehicle.battery.low_battery_threshold = currentThreshold;
-                    
-                    // 如果下位机发来了 is_low_battery_rtl_triggered，则更新
-                    if (payload.battery.is_low_battery_rtl_triggered !== undefined) {
-                        vehicle.battery.is_low_battery_rtl_triggered = payload.battery.is_low_battery_rtl_triggered;
-                    }
                 }
                 if (payload.gps) vehicle.gps = {sats: payload.gps.sat_count, fix: payload.gps.fix_type};
                 if (payload.home && payload.home.lat && payload.home.lon) {
@@ -238,7 +242,17 @@ export const useGcsStore = defineStore('gcs', () => {
     }
 
     function addLog(text, level = 'INFO', ts = null) {
-        const timeStr = new Date().toLocaleTimeString();
+        let timeStr;
+        if (ts) {
+            // 如果后端传了 timestamp (秒)，转换回本地时间
+            // 注意：backend 使用的是 asyncio.get_running_loop().time()，这是单调时间
+            // 历史日志的时间戳可能需要处理，或者后端直接传格式化好的字符串。
+            // 这里暂且简单处理，如果后端没传绝对时间，我们就用当前时间。
+            timeStr = new Date().toLocaleTimeString();
+        } else {
+            timeStr = new Date().toLocaleTimeString();
+        }
+        
         sysLogs.unshift({
             id: Date.now() + Math.random(),
             time: timeStr,
@@ -253,19 +267,24 @@ export const useGcsStore = defineStore('gcs', () => {
     function handleAck(payload) {
         const {command_type, success, message} = payload;
         if (success) {
-            if (command_type !== 'CMD_MANUAL_CONTROL' && command_type !== 'CMD_SET_RELAY') {
-                ElNotification.success({ title: '指令成功', message: message || '指令执行成功' });
+            if (command_type !== 'CMD_MANUAL_CONTROL' && command_type !== 'CMD_SET_RELAY' && command_type !== 'CMD_GET_RECENT_LOGS') {
+                pushNotification('指令成功', message || '指令执行成功', 'success');
             }
             if (command_type === 'CMD_DOWNLOAD_MISSION' && payload.mission_items) {
                 processDownloadedMission(payload.mission_items);
             }
+            if (command_type === 'CMD_GET_RECENT_LOGS' && payload.logs) {
+                // 清空当前日志并填入历史记录
+                sysLogs.length = 0;
+                payload.logs.forEach(log => {
+                    // 历史日志通常已经包含完整的 packet 结构，直接提取 payload
+                    if (log.payload) {
+                        addLog(log.payload.text, log.payload.level, log.timestamp);
+                    }
+                });
+            }
         } else {
-            ElNotification({
-                title: '指令失败',
-                message: message,
-                type: 'error',
-                duration: 5000
-            });
+            pushNotification('指令失败', message, 'error');
         }
     }
 
@@ -274,7 +293,7 @@ export const useGcsStore = defineStore('gcs', () => {
             mission.plannedWaypoints = [];
             mission.progress.total = 0;
             mission.progress.current = 0;
-            ElNotification.info({ title: '任务信息', message: "飞控上无任务" });
+            pushNotification('任务信息', '飞控上无任务', 'info');
             return;
         }
         
@@ -302,16 +321,16 @@ export const useGcsStore = defineStore('gcs', () => {
         mission.progress.current = 0; // 重置当前航点
         triggerRedraw();
         if (validPoints.length > 0) {
-            ElNotification.success({ title: '任务加载', message: `已从飞控加载 ${validPoints.length} 个航点` });
+            pushNotification('任务加载', `已从飞控加载 ${validPoints.length} 个航点`, 'success');
         } else {
-            ElNotification.info({ title: '任务信息', message: "飞控上无有效航点" });
+            pushNotification('任务信息', '飞控上无有效航点', 'info');
         }
     }
 
     function sendPacket(type, payload) {
         if (!socket || socket.readyState !== WebSocket.OPEN) {
             if (type !== 'CMD_MANUAL_CONTROL') {
-                ElNotification.warning({ title: '连接警告', message: '未连接到后端服务' });
+                pushNotification('连接警告', '未连接到后端服务', 'warning');
             }
             return;
         }
@@ -320,6 +339,9 @@ export const useGcsStore = defineStore('gcs', () => {
             payload: payload,
             request_id: Date.now().toString()
         };
+        if(packet.type!=="CMD_MANUAL_CONTROL"){
+            console.log(JSON.stringify(packet))
+        }
         socket.send(JSON.stringify(packet));
     }
 
@@ -363,13 +385,13 @@ export const useGcsStore = defineStore('gcs', () => {
     // --- 新增: 清除轨迹 ---
     function clearTrajectory() {
         vehicle.trajectory = [];
-        ElNotification.success({ title: '操作成功', message: '轨迹已清除' });
+        pushNotification('操作成功', '轨迹已清除', 'success');
     }
 
     // --- 新增: 继电器控制 ---
     function setRelay(state) {
         if (state && vehicle.battery.is_low_battery_rtl_triggered) {
-            ElNotification.warning({ title: '操作被阻止', message: '低电量返航中，禁止开启混合搅拌器！' });
+            pushNotification('操作被阻止', '低电量返航中，禁止开启混合搅拌器', 'warning');
             return;
         }
         sendPacket('CMD_SET_RELAY', {state: state ? 1 : 0});
@@ -410,6 +432,37 @@ export const useGcsStore = defineStore('gcs', () => {
     }
 
 
+    // --- 新增: 系统控制 ---
+    function shutdownPi() {
+        ElMessageBox.confirm(
+            '确定要关闭树莓派吗？这将导致地面站断开连接。',
+            '系统关机确认',
+            {
+                confirmButtonText: '确定关机',
+                cancelButtonText: '取消',
+                type: 'warning',
+                customClass: 'hud-message-box'
+            }
+        ).then(() => {
+            sendPacket('CMD_SHUTDOWN_PI', {});
+        }).catch(() => {});
+    }
+
+    function shutdownFcu() {
+        ElMessageBox.confirm(
+            '确定要关闭飞控吗？',
+            '飞控关机确认',
+            {
+                confirmButtonText: '确定关机',
+                cancelButtonText: '取消',
+                type: 'warning',
+                customClass: 'hud-message-box'
+            }
+        ).then(() => {
+            sendPacket('CMD_SHUTDOWN_FCU', {});
+        }).catch(() => {});
+    }
+
     return {
         vehicle,
         mission,
@@ -417,12 +470,14 @@ export const useGcsStore = defineStore('gcs', () => {
         sysLogs,
         plannerMode,
         areaPoints,
+        notificationLogs,
         isWsConnected,
         wsUrl,
 
         connectWebSocket,
         changeWsUrl,
         sendPacket,
+        pushNotification,
         updatePlannedMission,
         triggerMapSave,
         triggerMapClear,
@@ -434,6 +489,8 @@ export const useGcsStore = defineStore('gcs', () => {
         addAreaPoint,
         clearAreaPoints,
         setHome,
-        setGotoTargetCandidate
+        setGotoTargetCandidate,
+        shutdownPi,
+        shutdownFcu
     }
 })

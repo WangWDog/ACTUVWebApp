@@ -33,6 +33,18 @@
           <span class="status-text">{{ vehicle.connected ? '已连接' : '未连接' }}</span>
         </div>
       </div>
+      <el-divider />
+      <div class="system-controls">
+        <div class="status-label" style="margin-bottom: 8px;">系统控制</div>
+        <div class="control-btns">
+          <el-button type="danger" size="small" :icon="SwitchButton" @click="store.shutdownPi" plain>
+            关闭 RPi
+          </el-button>
+          <el-button type="danger" size="small" :icon="VideoPause" @click="store.shutdownFcu" plain>
+            关闭 FCU
+          </el-button>
+        </div>
+      </div>
     </div>
   </el-popover>
 
@@ -59,7 +71,7 @@
 import { ref, computed } from 'vue';
 import { useGcsStore } from '../../store/useGcsStore';
 import { storeToRefs } from 'pinia';
-import { Link } from '@element-plus/icons-vue';
+import { Link, SwitchButton, VideoPause } from '@element-plus/icons-vue';
 
 const store = useGcsStore();
 const { vehicle, isWsConnected, wsUrl } = storeToRefs(store);
@@ -124,6 +136,11 @@ const handleChangeAddress = () => {
   min-height: 32px;
   padding: 0;
   border: none;
+}
+.control-btns {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
 }
 </style>
 <style>
