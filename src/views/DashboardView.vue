@@ -331,7 +331,12 @@
         </el-icon>
         <h2>连接已断开</h2>
         <p>正在尝试自动重连...</p>
-      </div>
+        <div class = "ws_disconnect_group panel-background">
+        <h3>当前连接地址</h3>
+       <p>{{wsUrl}}</p>
+        <el-button style="font-weight: 600; font-size: 16px" type="primary" link @click="openWsDialog">更改连接地址</el-button>
+        </div>
+        </div>
     </div>
 
     <!-- 弹窗统一样式 -->
@@ -406,22 +411,19 @@ import {useGcsStore} from '../store/useGcsStore';
 import {storeToRefs} from 'pinia';
 import VirtualJoystick from '../components/Cockpit/VirtualJoystick.vue';
 import {
-  Aim,
   Bell,
+  Document,
   Lightning,
   Link,
   Loading,
   Menu,
-  Unlock,
-  Tools,
-  Delete,
+  Setting,
   SwitchButton,
+  Tools,
   VideoPause,
-  VideoPlay,
-  Document,
-  Setting
+  VideoPlay
 } from '@element-plus/icons-vue';
-import {ElMessageBox, ElNotification} from 'element-plus';
+import {ElMessageBox} from 'element-plus';
 
 const store = useGcsStore();
 const {vehicle, sysLogs, notificationLogs, mission, mapTriggers, isWsConnected, wsUrl} = storeToRefs(store);
@@ -503,7 +505,7 @@ const getLogLevelClass = (level) => {
 const changeMode = (mode, payload_extra = {}) => {
 
   if (mode === vehicle.value.mode) {
-    if(!vehicle.value.armed){
+    if (!vehicle.value.armed) {
       sendArmCommand('ARM', false);
     }
     return;
@@ -1118,7 +1120,14 @@ onUnmounted(() => {
 .hud-stop-btn:active {
   transform: scale(0.95);
 }
-
+.panel-background{
+    background: rgba(20, 20, 20, 0.88);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    padding: 16px 20px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
 /* ================== 底部仪表盘 ================== */
 .bottom-dashboard {
   pointer-events: auto;
